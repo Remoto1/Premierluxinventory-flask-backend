@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Premierlux Inventory – Login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&family=Cinzel:wght@600;700&display=swap" rel="stylesheet">
+
+  <style>
+    *, html, body {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Poppins', sans-serif;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: linear-gradient(to bottom right, #26b078, #4b8d9899, #2ba79f);
+      overflow: hidden;
+    }
+
+    .container {
+      width: 50vw;
+      max-width: 760px;
+      height: 60vh;
+      display: grid;
+      grid-template-columns: 100%;
+      grid-template-areas: "login";
+      box-shadow: 0 0 17px 10px rgb(0 0 0 / 30%);
+      border-radius: 20px;
+      background: rgb(10, 45, 50);
+      overflow: hidden;
+      position: relative;
+    }
+
+        .design {
+      grid-area: design;
+      display: none;
+      position: relative;
+      isolation: isolate;
+      background: radial-gradient(circle at 0% 0%, #1e293b66 0, transparent 45%),
+                  radial-gradient(circle at 100% 100%, #04785766 0, transparent 50%);
+      overflow: hidden;
+    }
+
+    .rotate-45 {
+      transform: rotate(-45deg);
+    }
+
+    /* Soft grid glow behind pills */
+    .design::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background-image:
+        linear-gradient(120deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        linear-gradient(210deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+      background-size: 80px 80px;
+      opacity: 0.4;
+      mix-blend-mode: screen;
+      filter: blur(0.5px);
+    }
+
+    .design::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 20% 0%, #22c55e22 0, transparent 55%),
+                  radial-gradient(circle at 120% 120%, #38bdf822 0, transparent 55%);
+      mix-blend-mode: screen;
+      opacity: 0.8;
+    }
+
+    .design .pill-1,
+    .design .pill-2,
+    .design .pill-3,
+    .design .pill-4 {
+      position: absolute;
+      background: radial-gradient(circle at 0% 0%, #38bdf8 0, #0f172a 55%);
+      box-shadow:
+        0 18px 40px rgba(0, 0, 0, 0.8),
+        0 0 40px rgba(56, 189, 248, 0.35);
+      will-change: transform, box-shadow, opacity;
+    }
+
+    .design .pill-1 {
+      bottom: -10px;
+      left: -50px;
+      width: 110px;
+      height: 240px;
+      border-radius: 60px;
+      animation: float1 8s ease-in-out infinite;
+    }
+
+    .design .pill-2 {
+      top: -120px;
+      left: -90px;
+      height: 480px;
+      width: 240px;
+      border-radius: 210px;
+      border: 26px solid rgba(226, 212, 234, 0.8);
+      background: radial-gradient(circle at 10% 0%, #6366f1 0, #020617 60%);
+      animation: float2 11s ease-in-out infinite;
+    }
+
+    .design .pill-3 {
+      top: -90px;
+      left: 170px;
+      height: 200px;
+      width: 110px;
+      border-radius: 76px;
+      background: radial-gradient(circle at 0% 0%, #22c55e 0, #020617 60%);
+      animation: float3 9s ease-in-out infinite;
+    }
+
+    .design .pill-4 {
+      bottom: -190px;
+      left: 230px;
+      height: 320px;
+      width: 130px;
+      border-radius: 84px;
+      background: radial-gradient(circle at 50% 0%, #0ea5e9 0, #020617 65%);
+      animation: float4 12s ease-in-out infinite;
+    }
+
+    @keyframes float1 {
+      0%   { transform: translateY(0) rotate(-45deg) scale(1); opacity: 0.9; }
+      40%  { transform: translateY(-22px) rotate(-40deg) scale(1.03); opacity: 1; }
+      70%  { transform: translateY(-8px) rotate(-43deg) scale(1.01); opacity: 0.95; }
+      100% { transform: translateY(0) rotate(-45deg) scale(1); opacity: 0.9; }
+    }
+
+    @keyframes float2 {
+      0%   { transform: translateY(0) rotate(-45deg) scale(1); }
+      50%  { transform: translateY(18px) rotate(-48deg) scale(1.04); }
+      100% { transform: translateY(0) rotate(-45deg) scale(1); }
+    }
+
+    @keyframes float3 {
+      0%   { transform: translateY(0) rotate(-45deg); opacity: 0.85; }
+      40%  { transform: translateY(-26px) rotate(-38deg); opacity: 1; }
+      100% { transform: translateY(0) rotate(-45deg); opacity: 0.9; }
+    }
+
+    @keyframes float4 {
+      0%   { transform: translateY(0) rotate(-45deg) scale(1); }
+      25%  { transform: translateY(-18px) rotate(-42deg) scale(1.03); }
+      55%  { transform: translateY(-6px) rotate(-47deg) scale(1.05); }
+      80%  { transform: translateY(10px) rotate(-44deg) scale(1.02); }
+      100% { transform: translateY(0) rotate(-45deg) scale(1); }
+    }
+
+
+    .login {
+      grid-area: login;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: rgb(17, 117, 112);
+      padding: 0 2rem;
+      gap: 10px;
+    }
+
+    /* PREMIERLUX logo styles */
+    .logo-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 4px;
+    }
+
+    .logo-main {
+      font-family: 'Cinzel', serif;
+      font-size: 32px;
+      letter-spacing: 0.32em;
+      color: #cfd3ff;
+      text-shadow:
+        0 0 4px #ffffffaa,
+        0 0 12px #4b2bbd,
+        0 0 22px #2f1b88;
+    }
+
+    .logo-main span.accent {
+      color: #f5f3ff;
+      text-shadow:
+        0 0 6px #ffffff,
+        0 0 16px #6b21a8;
+    }
+
+    .logo-bar {
+      position: relative;
+      padding: 4px 24px 6px;
+      background: linear-gradient(to right, #9c5c12, #d27a18, #9c5c12);
+      border-radius: 2px;
+      box-shadow:
+        0 2px 4px rgba(0,0,0,0.7),
+        0 0 18px rgba(0,0,0,0.9);
+      overflow: hidden;
+    }
+
+    .logo-bar::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to right, #ffffff26, transparent 25%, transparent 75%, #ffffff26);
+      mix-blend-mode: screen;
+      opacity: 0.7;
+    }
+
+    .logo-bar-text {
+      position: relative;
+      font-family: 'Cinzel', serif;
+      font-size: 11px;
+      letter-spacing: 0.25em;
+      color: #f5e7c1;
+      text-shadow: 0 1px 1px rgba(0,0,0,0.65);
+    }
+
+    .login h3.title {
+  margin: 6px 0 2px;
+  font-family: 'Cinzel', serif;
+  font-size: 18px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #e5f6ff;
+  text-shadow:
+    0 0 4px rgba(255, 255, 255, 0.6),
+    0 0 10px rgba(56, 189, 248, 0.8),
+    0 0 18px rgba(15, 118, 110, 0.9);
+}
+
+
+    .login .subtitle {
+      margin: 6px 0 2px;
+  font-family: 'Cinzel', serif;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #e5f6ff;
+  text-shadow:
+    0 0 4px rgba(255, 255, 255, 0.6),
+    0 0 10px rgba(56, 189, 248, 0.8),
+    0 0 18px rgba(15, 118, 110, 0.9);
+    }
+
+    /* Glassy inputs + labels */
+    .field-group {
+      width: 78%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .field-label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #c3e0f5;
+      opacity: 0.85;
+    }
+
+    .text-input {
+      background: linear-gradient(
+        120deg,
+        rgba(15, 118, 110, 0.16),
+        rgba(15, 23, 42, 0.4)
+      );
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      height: 42px;
+      display: flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0 16px;
+      box-shadow:
+        0 0 0 1px rgba(15, 23, 42, 0.8),
+        0 10px 25px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      transition:
+        border-color 0.18s ease,
+        box-shadow 0.18s ease,
+        transform 0.1s ease;
+    }
+
+    .text-input i {
+      color: #7dd3fc;
+      font-size: 13px;
+    }
+
+    .text-input input {
+      background: transparent;
+      border: none;
+      outline: none;
+      width: 100%;
+      height: 100%;
+      margin-left: 10px;
+      font-size: 13px;
+      color: #e5f6ff;
+    }
+
+    .text-input input::placeholder {
+      color: #64748b;
+    }
+
+    .text-input:focus-within {
+      border-color: #22d3ee;
+      box-shadow:
+        0 0 0 1px rgba(56, 189, 248, 0.8),
+        0 0 22px rgba(45, 212, 191, 0.45);
+      transform: translateY(-1px);
+    }
+
+    /* Button */
+    .login-btn {
+      width: 78%;
+      max-width: 360px;
+      padding: 11px;
+      margin-top: 14px;
+      color: #ecfeff;
+      background: radial-gradient(circle at 0% 0%, #22c55e 0, #0f766e 32%, #022c22 90%);
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      box-shadow:
+        0 0 0 1px rgba(15, 23, 42, 0.9),
+        0 16px 35px rgba(0, 0, 0, 0.7);
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition:
+        transform 0.15s ease,
+        box-shadow 0.15s ease,
+        filter 0.15s ease;
+    }
+
+    .login-btn span.icon-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #bbf7d0;
+      box-shadow: 0 0 12px #6ee7b7;
+    }
+
+    .login-btn:hover {
+      filter: brightness(1.06);
+      transform: translateY(-1px);
+      box-shadow:
+        0 0 0 1px rgba(56, 189, 248, 0.8),
+        0 20px 40px rgba(0, 0, 0, 0.75);
+    }
+
+    .login-btn:active {
+      transform: translateY(1px) scale(0.99);
+      box-shadow:
+        0 0 0 1px rgba(15, 23, 42, 0.9),
+        0 10px 24px rgba(0, 0, 0, 0.6);
+    }
+
+    #loginError {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #fecaca;
+      min-height: 14px;
+      text-shadow: 0 0 4px rgba(127, 29, 29, 0.7);
+    }
+
+    a {
+      font-size: 12px;
+      color: #cbd5f5;
+      cursor: pointer;
+      user-select: none;
+      text-decoration: none;
+    }
+
+    a.forgot {
+      margin-top: 6px;
+      opacity: 0.8;
+    }
+
+    a.forgot:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+
+    @media (min-width: 768px) {
+      .container {
+        grid-template-columns: 50% 50%;
+        grid-template-areas: "design login";
+      }
+      .design {
+        display: block;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="loginContainer">
+    <div class="design">
+      <div class="pill-1 rotate-45"></div>
+      <div class="pill-2 rotate-45"></div>
+      <div class="pill-3 rotate-45"></div>
+      <div class="pill-4 rotate-45"></div>
+    </div>
+
+    <div class="login" id="loginForm">
+      <div class="logo-wrapper">
+        <div class="logo-main">
+          PREMIER<span class="accent">LUX</span>
+        </div>
+        <div class="logo-bar">
+          <div class="logo-bar-text">DENTAL CLINIC</div>
+        </div>
+      </div>
+
+      <h3 class="title">Inventory System</h3>
+      <p class="subtitle">Sign in to access the smart dashboard.</p>
+
+      <div class="field-group">
+        <span class="field-label">Email address</span>
+        <div class="text-input">
+          <i class="fa fa-user"></i>
+          <input type="email" id="loginEmail" placeholder="admin@example.com" />
+        </div>
+      </div>
+
+      <div class="field-group">
+        <span class="field-label">Password</span>
+        <div class="text-input">
+          <i class="fa fa-lock"></i>
+          <input type="password" id="loginPassword" placeholder="••••••••" />
+        </div>
+      </div>
+
+      <button class="login-btn" id="loginBtn">
+        <span class="icon-dot"></span>
+        <span>Sign in</span>
+      </button>
+
+      <p id="loginError"></p>
+
+      <a class="forgot">Forgot password?</a>
+    </div>
+  </div>
+
+  <!-- Font Awesome icons (for user/lock) -->
+  <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
+
+  <script>
+    const API_BASE = "http://127.0.0.1:5000";
+
+    const loginBtn = document.getElementById('loginBtn');
+    const loginError = document.getElementById('loginError');
+
+    loginBtn.addEventListener('click', async () => {
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value.trim();
+      loginError.textContent = "";
+
+      if (!email || !password) {
+        loginError.textContent = "Please enter email and password.";
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ email, password })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          loginError.textContent = data.error || "Login failed.";
+          return;
+        }
+
+        // On success go straight to dashboard
+        window.location.href = "/";
+
+      } catch (e) {
+        loginError.textContent = "Network error. Please try again.";
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+flask
+pymongo
+flask-cors
+statsmodels
+requests
+google-generativeai
