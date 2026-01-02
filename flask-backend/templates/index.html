@@ -63,201 +63,242 @@
     });
   </script>
   <style>
-    /* MOBILE TUNING */
-@media (max-width: 640px) {
-  /* Overall page padding */
-  main {
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
+     /* MOBILE TUNING */
+  @media (max-width: 640px) {
+    /* Global button sizing for phones */
+    button {
+      font-size: 0.75rem;
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
+      padding-left: 0.9rem;
+      padding-right: 0.9rem;
+      border-radius: 0.9rem;
+    }
+
+    .btn-primary-mobile {
+      padding-top: 0.7rem;
+      padding-bottom: 0.7rem;
+      font-weight: 700;
+    }
+
+    .btn-icon-mobile {
+      padding: 0.4rem;
+      border-radius: 9999px;
+    }
+
+    /* Overall page padding */
+    main {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+
+    /* Header pill */
+    header > div > div {
+      border-radius: 1.25rem;
+      padding-left: 0.9rem;
+      padding-right: 0.9rem;
+    }
+
+    /* Dashboard KPIs */
+    #dashboard-section .grid {
+      gap: 0.6rem;
+    }
+    #dashboard-section .grid > div {
+      padding: 0.6rem 0.75rem;
+      border-radius: 0.9rem;
+    }
+
+    /* Inventory cards */
+    #inventoryCards {
+      gap: 0.6rem;
+    }
+    #inventoryCards > div {
+      border-radius: 1rem;
+      padding: 0.75rem 0.8rem 0.7rem;
+    }
+
+    /* Tables */
+    table th,
+    table td {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
+    }
+    table {
+      font-size: 0.72rem;
+    }
+
+    /* Overlays bottom sheets (default) */
+    #batchOverlay,
+    #editStockOverlay,
+    #restockOverlay,
+    #itemDetailsOverlay,
+    #branchOverlay,
+    #supplierOverlay,
+    #userOverlay,
+    #newItemOverlay,
+    #aiOverlay,
+    #deleteOverlay {
+      align-items: flex-end;
+      padding: 0;
+    }
+
+    #editStockOverlay > div,
+    #restockOverlay > div,
+    #itemDetailsOverlay > div,
+    #branchOverlay > div,
+    #supplierOverlay > div,
+    #userOverlay > div,
+    #newItemOverlay > div,
+    #aiOverlay > div,
+    #deleteOverlay > div {
+      width: 100%;
+      max-width: 100%;
+      border-radius: 1.25rem 1.25rem 0 0;
+      margin: 0;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    #supplierOverlay > div,
+    #restockOverlay > div,
+    #newItemOverlay > div,
+    #userOverlay > div {
+      padding: 1.25rem;
+    }
+
+    /* Add Batch: small centered dialog */
+    #batchOverlay {
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    #batchOverlay > div {
+      width: 100%;
+      max-width: 360px;
+      max-height: 80vh;
+      border-radius: 1.25rem;
+      overflow-y: auto;
+      padding: 1.25rem;
+    }
+
+    /* Hide non‑critical table columns */
+    #orders-section table th:nth-child(2),
+    #orders-section table td:nth-child(2),
+    #orders-section table th:nth-child(4),
+    #orders-section table td:nth-child(4),
+    #admin-accounts-section table th:nth-child(2),
+    #admin-accounts-section table td:nth-child(2),
+    #admin-logs-section table th:nth-child(5),
+    #admin-logs-section table td:nth-child(5) {
+      display: none;
+    }
+
+    /* Mobile menu height */
+    #mobileMenu {
+      max-height: 90vh;
+    }
   }
 
-  /* Header pill */
-  header > div > div {
-    border-radius: 1.25rem;
-    padding-left: 0.9rem;
-    padding-right: 0.9rem;
+  /* Native-feel scrolling */
+  .custom-scrollbar,
+  #mobileMenu,
+  #luxChatWindow,
+  #batchOverlay,
+  #editStockOverlay,
+  #restockOverlay,
+  #itemDetailsOverlay,
+  #branchOverlay,
+  #supplierOverlay,
+  #userOverlay,
+  #newItemOverlay,
+  #aiOverlay {
+    -webkit-overflow-scrolling: touch;
   }
 
-  /* Dashboard KPIs: reduce gaps and card padding */
-  #dashboard-section .grid {
-    gap: 0.6rem;
-  }
-  #dashboard-section .grid > div {
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.9rem;
-  }
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
 
-  /* Inventory cards grid: comfortable but compact */
-  #inventoryCards {
-    gap: 0.6rem;
-  }
-  #inventoryCards > div {
-    border-radius: 1rem;
-    padding: 0.75rem 0.8rem 0.7rem;
-  }
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
 
-  /* Tables: tighter padding and smaller fonts */
-  table th,
-  table td {
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
-  }
-  table {
-    font-size: 0.72rem;
-  }
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 20px;
+}
 
-  /* Hide non‑critical columns on very small screens (orders, audit, users) */
-  #orders-section table th:nth-child(2),
-  #orders-section table td:nth-child(2),
-  #orders-section table th:nth-child(4),
-  #orders-section table td:nth-child(4),
-  #admin-accounts-section table th:nth-child(2),
-  #admin-accounts-section table td:nth-child(2),
-  #admin-logs-section table th:nth-child(5),
-  #admin-logs-section table td:nth-child(5) {
-    display: none;
-  }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
 
-  /* Modals: full‑width sheet style on mobile */
-  #batchOverlay > div,
-  #editStockOverlay > div,
-  #restockOverlay > div,
-  #itemDetailsOverlay > div,
-  #branchOverlay > div,
-  #supplierOverlay > div,
-  #userOverlay > div,
-  #newItemOverlay > div,
-  #aiOverlay > div {
-    width: 100%;
-    max-width: 100%;
-    border-radius: 1.25rem 1.25rem 0 0;
-    margin: 0;
-    bottom: 0;
-  }
+.pointer-events-none {
+  pointer-events: none;
+}
 
-  /* Mobile menu: more breathing room */
-  #mobileMenu {
-    max-height: 90vh;
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
-/* Make all main scroll areas feel more native on phones */
-.custom-scrollbar,
-#mobileMenu,
-#luxChatWindow,
-#batchOverlay,
-#editStockOverlay,
-#restockOverlay,
-#itemDetailsOverlay,
-#branchOverlay,
-#supplierOverlay,
-#userOverlay,
-#newItemOverlay,
-#aiOverlay {
-  -webkit-overflow-scrolling: touch;
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out forwards;
 }
 
-    /* Custom Scrollbar */
-    .custom-scrollbar::-webkit-scrollbar {
-      width: 6px;
-    }
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
 
-    .custom-scrollbar::-webkit-scrollbar-track {
-      background: rgba(0, 0, 0, 0.05);
-    }
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
 
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-      background: #CBD5E1;
-      border-radius: 20px;
-    }
+@keyframes progressLoading {
+  0% { width: 0%; }
+  100% { width: 100%; }
+}
 
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-      background: #94A3B8;
-    }
+.animate-progress-loading {
+  animation: progressLoading 2.5s ease-in-out forwards;
+}
 
-    .pointer-events-none {
-      pointer-events: none;
-    }
+/* Background Blobs */
+@keyframes blob {
+  0%   { transform: translate(0px, 0px) scale(1); }
+  33%  { transform: translate(30px, -50px) scale(1.1); }
+  66%  { transform: translate(-20px, 20px) scale(0.9); }
+  100% { transform: translate(0px, 0px) scale(1); }
+}
 
-    /* Animations */
-    @keyframes fadeIn {
-      from {
-        opacity: 0;
-        transform: translateY(10px);
-      }
+.animate-blob {
+  animation: blob 10s infinite;
+}
 
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
+.animation-delay-2000 {
+  animation-delay: 2s;
+}
 
-    .animate-fade-in {
-      animation: fadeIn 0.4s ease-out forwards;
-    }
+.animation-delay-4000 {
+  animation-delay: 4s;
+}
 
-    @keyframes fadeInUp {
-      from {
-        opacity: 0;
-        transform: scale(0.95) translateY(10px);
-      }
-
-      to {
-        opacity: 1;
-        transform: scale(1) translateY(0);
-      }
-    }
-
-    .animate-fade-in-up {
-      animation: fadeInUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-    }
-
-    @keyframes progressLoading {
-      0% {
-        width: 0%;
-      }
-
-      100% {
-        width: 100%;
-      }
-    }
-
-    .animate-progress-loading {
-      animation: progressLoading 2.5s ease-in-out forwards;
-    }
-
-    /* Background Blobs */
-    @keyframes blob {
-      0% {
-        transform: translate(0px, 0px) scale(1);
-      }
-
-      33% {
-        transform: translate(30px, -50px) scale(1.1);
-      }
-
-      66% {
-        transform: translate(-20px, 20px) scale(0.9);
-      }
-
-      100% {
-        transform: translate(0px, 0px) scale(1);
-      }
-    }
-
-    .animate-blob {
-      animation: blob 10s infinite;
-    }
-
-    .animation-delay-2000 {
-      animation-delay: 2s;
-    }
-
-    .animation-delay-4000 {
-      animation-delay: 4s;
-    }
   </style>
 </head>
 
