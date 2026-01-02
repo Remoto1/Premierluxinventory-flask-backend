@@ -1,12 +1,10 @@
-/**
- * PREMIERLUX INVENTORY SYSTEM - MAIN LOGIC
- * Consolidated & Cleaned Version
- */
-
 let currentUserRole = 'admin';
 
 // --- API CONFIGURATION ---
-const API_BASE = "http://127.0.0.1:5000";
+const API_BASE = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+    ? ""
+    : "https://premierluxinventory.onrender.com";
+
 const API_URL = `${API_BASE}/api/inventory`;
 const BRANCHES_API_URL = `${API_BASE}/api/branches`;
 const ALERTS_API_URL = `${API_BASE}/api/alerts`;
@@ -21,7 +19,190 @@ let analyticsMainChart = null;
 let stockInOutChart = null;
 let analyticsSocket = null;
 let lastAnalyticsPayload = null;
+let currentAnalyticsBranch = 'All'
+let pendingHighlightItem = null;
 
+// //////////////////////////////////////// //
+//      🔐 AUTH & ROLE MANAGEMENT            //
+// //////////////////////////////////////// //
+let currentUser = null;
+
+async function checkCurrentUser() {
+    try {
+        // Send session cookie to backend for verification
+        const res = await fetch(`${API_BASE}/api/me`, {
+            credentials: 'include'
+        });
+
+        if (!res.ok) {
+            doLogout();
+            return;
+        }
+        currentUser = await res.json();
+
+        // Apply UI restrictions based on role
+        applyRolePermissions();
+        console.log(`Authenticated as: ${currentUser.name} (${currentUser.role})`);
+    } catch (err) {
+        console.error("Auth check failed:", err);
+    }
+}
+
+function applyRolePermissions() {
+    if (!currentUser) return;
+    const role = currentUser.role;
+    const adminMenu = document.getElementById('adminMenuBtn');
+    const mobileAdminMenu = document.getElementById('mobileAdminMenu');
+    const ownerSettingsBtn = document.getElementById('ownerSettingsBtn');
+    const mobileSettingsBtn = document.getElementById('mobileSettingsBtn');
+    const marketWidget = document.getElementById('lux-market-widget');
+    const reqBtn = document.getElementById('btnRequestNewItem');
+
+    if (role === 'staff') {
+        if (adminMenu) adminMenu.classList.add('hidden');
+        if (mobileAdminMenu) mobileAdminMenu.classList.add('hidden');
+        if (marketWidget) marketWidget.classList.add('hidden');
+        if (reqBtn) reqBtn.classList.remove('hidden');
+
+        const desktopSupplierBtn = document.querySelector('button[onclick*="showPage(\'suppliers\')"]');
+        if (desktopSupplierBtn) desktopSupplierBtn.classList.add('hidden');
+
+        const mobileSupplierBtn = document.querySelector('#mobileProcurementSection button[onclick*="showPage(\'suppliers\')"]');
+        if (mobileSupplierBtn) mobileSupplierBtn.classList.add('hidden');
+
+        lockBranchUI(currentUser.branch);
+
+    } else {
+        // --- ADMIN / OWNER ---
+        // Show everything
+        if (adminMenu) adminMenu.classList.remove('hidden');
+        if (mobileAdminMenu) mobileAdminMenu.classList.remove('hidden');
+        if (marketWidget) marketWidget.classList.remove('hidden');
+        if (reqBtn) reqBtn.classList.add('hidden');
+
+        // Unhide Suppliers
+        const desktopSupplierBtn = document.querySelector('button[onclick*="showPage(\'suppliers\')"]');
+        if (desktopSupplierBtn) desktopSupplierBtn.classList.remove('hidden');
+
+        const mobileSupplierBtn = document.querySelector('#mobileProcurementSection button[onclick*="showPage(\'suppliers\')"]');
+        if (mobileSupplierBtn) mobileSupplierBtn.classList.remove('hidden');
+    }
+
+    // Owner Specifics
+    if (role === 'owner') {
+        if (ownerSettingsBtn) ownerSettingsBtn.classList.remove('hidden');
+        if (mobileSettingsBtn) mobileSettingsBtn.classList.remove('hidden');
+    } else {
+        if (ownerSettingsBtn) ownerSettingsBtn.classList.add('hidden');
+        if (mobileSettingsBtn) mobileSettingsBtn.classList.add('hidden');
+    }
+}
+// Helper for locking branch UI
+function lockBranchUI(branchName) {
+    const btn = document.getElementById('branchDropdownBtn');
+    const label = document.getElementById('branchLabel');
+    const filter = document.getElementById('branchFilter');
+
+    if (label) {
+        label.innerHTML = `<i class="fas fa-lock text-[10px] mr-1 opacity-50"></i> ${branchName}`;
+        if (btn) {
+            btn.onclick = null;
+            btn.classList.add('bg-slate-50', 'text-slate-400', 'cursor-not-allowed');
+        }
+        if (filter) filter.value = branchName;
+    }
+}
+
+
+// [main.js] - FIXED initDashboard (Solves "Active Branch KPI Syncing" issue)
+async function initDashboard() {
+    console.log("Initializing Dashboard...");
+
+    // FETCH INDEPENDENTLY (So one error doesn't kill the whole dashboard)
+
+    // 1. Inventory Data
+    fetch(API_URL)
+        .then(r => r.json())
+        .then(invRes => {
+            const totalValue = invRes.reduce((acc, item) => acc + ((item.price || 0) * (item.quantity || 0)), 0);
+            const lowStockItems = invRes.filter(item => (item.quantity || 0) <= (item.reorder_level || 0));
+
+            document.getElementById('dash-total-value').textContent = `₱${totalValue.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
+            document.getElementById('dash-low-stock').textContent = lowStockItems.length;
+
+            // Render Charts
+            if (typeof renderGradientBranchChart === 'function') renderGradientBranchChart(invRes);
+            if (typeof renderCategoryDoughnut === 'function') renderCategoryDoughnut(invRes);
+
+            // Render Restock Table
+            renderRestockTable(lowStockItems);
+        })
+        .catch(e => console.error("Dash Inventory Error", e));
+
+    // 2. Branch Data (FIX FOR "SYNCING")
+    fetch(BRANCHES_API_URL)
+        .then(r => r.json())
+        .then(branchRes => {
+            const el = document.getElementById('dash-branches');
+            // Check if it's an array before checking length
+            if (el && Array.isArray(branchRes)) {
+                el.textContent = branchRes.length;
+            } else if (el) {
+                el.textContent = "1"; // Fallback
+            }
+        })
+        .catch(e => {
+            console.error("Dash Branch Error", e);
+            document.getElementById('dash-branches').textContent = "-";
+        });
+
+    // 3. AI Insights
+    fetch(`${API_BASE}/api/ai/dashboard`)
+        .then(r => r.json())
+        .then(aiRes => {
+            if (typeof applyAiDashboardToCards === 'function') applyAiDashboardToCards(aiRes);
+        })
+        .catch(e => console.error("Dash AI Error", e));
+
+    // 4. Update Time & Expiring
+    document.getElementById('dash-timestamp').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const expiringCount = window.bellState?.expiringItems?.length || 0;
+    const expEl = document.getElementById('dash-expiring');
+    if (expEl) expEl.textContent = expiringCount;
+}
+
+// Helper to render restock table (extracted for clarity)
+function renderRestockTable(lowStockItems) {
+    const restockTable = document.getElementById('dash-restock-table');
+    if (!restockTable) return;
+
+    restockTable.innerHTML = '';
+    const criticalItems = lowStockItems
+        .sort((a, b) => ((a.quantity - a.reorder_level) - (b.quantity - b.reorder_level)))
+        .slice(0, 5);
+
+    if (criticalItems.length === 0) {
+        restockTable.innerHTML = `<tr><td colspan="3" class="px-6 py-8 text-center text-slate-400 text-xs font-medium">✅ All stock levels healthy</td></tr>`;
+    } else {
+        criticalItems.forEach(item => {
+            const row = `
+            <tr class="border-b border-slate-50 last:border-0 hover:bg-brand-50/50">
+                <td class="px-4 md:px-6 py-3">
+                    <div class="font-bold text-slate-700 text-sm">${item.name}</div>
+                    <div class="md:hidden text-[10px] text-slate-400 font-medium">${item.branch}</div> 
+                </td>
+                <td class="px-4 md:px-6 py-3 text-right font-bold text-rose-600">${item.quantity}</td>
+                <td class="px-4 md:px-6 py-3 text-center">
+                    <button onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.quantity})" 
+                        class="bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-bold transition">
+                        Restock
+                    </button>
+                </td>
+            </tr>`;
+            restockTable.innerHTML += row;
+        });
+    }
+}
 // ==========================================
 // 1. GLOBAL HELPERS & STATE
 // ==========================================
@@ -82,7 +263,7 @@ function showPage(page) {
         'dashboard-section', 'inventory-section', 'branches-section',
         'orders-section', 'suppliers-section', 'compliance-section',
         'qr-section', 'admin-suppliers-section', 'admin-roles-section',
-        'admin-logs-section', 'admin-accounts-section', 'analytics-section'
+        'admin-logs-section', 'admin-accounts-section', 'analytics-section', 'admin-settings-section'
     ];
 
     // Hide all sections
@@ -97,15 +278,27 @@ function showPage(page) {
     const target = document.getElementById(page + '-section');
     if (target) target.classList.remove('hidden');
 
-    // --- PAGE SPECIFIC LOGIC ---
+    if (page === 'qr') {
+        // Stop scanner if running
+        if (typeof stopQrScanner === 'function') stopQrScanner();
+
+        // Reset Result UI
+        const card = document.getElementById('qrResultCard');
+        const empty = document.getElementById('qrEmptyState');
+        if (card) card.classList.add('hidden');
+        if (empty) empty.classList.remove('hidden');
+    }
 
     if (page === 'dashboard') {
-        initDashboard();          // Renders the charts and KPI cards
-        fetchAlertsForBell();     // Gets system alerts from backend
+        initDashboard();
+        fetchAlertsForBell();
+        fetchBatchesForAlerts();
+        fetchInventory();
 
-        // ➤ MISSING PIECES RESTORED:
-        fetchBatchesForAlerts();  // Checks for Expiring Items
-        fetchInventory();         // Checks for Low Stock Items
+
+        if (typeof fetchPriceInsights === 'function') {
+            fetchPriceInsights();
+        }
     }
 
     if (page === 'inventory') {
@@ -141,27 +334,21 @@ function showPage(page) {
     if (page === 'admin-accounts') {
         fetchUsers();
     }
+    if (page === 'admin-roles') {
+        fetchRoleStats();
+    }
+    if (page === 'admin-settings') {
+        initOwnerSettings();
+    }
+
+    if (page === 'analytics' || page === 'dashboard') {
+        fetchPriceInsights();
+    }
 }
 // Init on Load
 window.onload = function () {
 
-    // --- 1. SESSION CHECK (Main.js Only Version) ---
-    // We check if the session is active OR if the user just arrived from the login page.
-    const isActive = sessionStorage.getItem("isActiveSession");
-    const cameFromLogin = document.referrer.includes("/login");
-
     checkCurrentUser();
-
-    if (cameFromLogin || isActive) {
-        // If they just logged in, or already have a tab open, mark this window as safe.
-        sessionStorage.setItem("isActiveSession", "true");
-    } else {
-        // If they opened the browser fresh (no flag, didn't come from login), force logout.
-        console.log("Session invalid or browser closed. Logging out...");
-        doLogout();
-        return; // Stop loading the dashboard
-    }
-    // ----------------------------------------------
 
     // 2. Attach listener for Add Branch
     const addBranchBtn = document.getElementById('addBranchBtn');
@@ -176,68 +363,6 @@ window.onload = function () {
         hideSplashScreen();
     }, 2500);
 };
-
-
-// ==========================================
-// 3. DASHBOARD LOGIC
-// ==========================================
-
-async function initDashboard() {
-    console.log("Initializing Dashboard...");
-    try {
-        const [invRes, branchRes, aiRes] = await Promise.all([
-            fetch(API_URL).then(r => r.json()),
-            fetch(BRANCHES_API_URL).then(r => r.json()),
-            fetch(`${API_BASE}/api/ai/dashboard`).then(r => r.json())
-        ]);
-
-        // KPIs
-        const totalValue = invRes.reduce((acc, item) => acc + ((item.price || 0) * (item.quantity || 0)), 0);
-        const lowStockItems = invRes.filter(item => (item.quantity || 0) <= (item.reorder_level || 0));
-        const expiringCount = window.bellState.expiringItems.length;
-
-        document.getElementById('dash-total-value').textContent = `₱${totalValue.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
-        document.getElementById('dash-low-stock').textContent = lowStockItems.length;
-        document.getElementById('dash-expiring').textContent = expiringCount;
-        document.getElementById('dash-branches').textContent = branchRes.length;
-        document.getElementById('dash-timestamp').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-        // AI Card
-        if (aiRes) applyAiDashboardToCards(aiRes);
-
-        // Restock Table (Top 5 Critical)
-        const restockTable = document.getElementById('dash-restock-table');
-        if (restockTable) {
-            restockTable.innerHTML = '';
-            const criticalItems = lowStockItems
-                .sort((a, b) => ((a.quantity - a.reorder_level) - (b.quantity - b.reorder_level)))
-                .slice(0, 5);
-
-            criticalItems.forEach(item => {
-                const row = `
-                <tr class="border-b border-slate-50 last:border-0 transition-colors duration-200 hover:bg-indigo-50/50">
-                    <td class="px-6 py-3 font-medium text-slate-700">${item.name}</td>
-                    <td class="px-6 py-3 text-xs text-slate-500">${item.branch}</td>
-                    <td class="px-6 py-3 text-right font-bold text-rose-600">${item.quantity}</td>
-                    <td class="px-6 py-3 text-center">
-                        <button onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.quantity})" 
-                                class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-150 shadow-sm active:scale-95">
-                            Restock
-                        </button>
-                    </td>
-                </tr>`;
-                restockTable.innerHTML += row;
-            });
-        }
-
-        // Charts
-        renderGradientBranchChart(invRes);
-        renderCategoryDoughnut(invRes);
-
-    } catch (err) {
-        console.error("Dashboard Init Error:", err);
-    }
-}
 
 // Gradient Bar Chart
 function renderGradientBranchChart(inventory) {
@@ -254,9 +379,12 @@ function renderGradientBranchChart(inventory) {
     const labels = Object.keys(branchMap);
     const data = Object.values(branchMap);
 
+    // Define Plume Wine
+    const wineColor = '#5E4074';
+
     const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-    gradient.addColorStop(0, '#3b82f6');
-    gradient.addColorStop(0.8, 'rgba(59, 130, 246, 0.1)');
+    gradient.addColorStop(0, wineColor);
+    gradient.addColorStop(0.8, 'rgba(94, 64, 116, 0.1)'); // Transparent Wine
 
     if (dashBranchChart) dashBranchChart.destroy();
 
@@ -328,7 +456,13 @@ function renderCategoryDoughnut(inventory) {
             labels: labels,
             datasets: [{
                 data: data,
-                backgroundColor: ['#10b981', '#3b82f6', '#f97316', '#ef4444', '#8b5cf6'],
+                backgroundColor: [
+                    '#5E4074', // Plume Wine (Main)
+                    '#8D6E9E', // Lighter Purple
+                    '#C4B2D1', // Pale Purple
+                    '#B5A642', // Muted Gold (Compliments Wine)
+                    '#64748b'  // Slate (Neutral)
+                ],
                 borderWidth: 0,
                 hoverOffset: 5
             }]
@@ -347,20 +481,26 @@ function renderCategoryDoughnut(inventory) {
 }
 
 
-// ==========================================
-// 4. INVENTORY LOGIC & CARDS
-// ==========================================
-
 function fetchInventory() {
-    fetch(API_URL)
-        .then(r => r.json())
-        .then(data => {
-            renderInventoryCards(data);
-            if (window.updateLowStock) window.updateLowStock(data);
-        })
-        .catch(err => console.error("fetchInventory error", err));
+    // ➤ FIX: Safe access to search and branch elements
+    const searchEl = document.getElementById('inventorySearch');
+    const branchEl = document.getElementById('branchFilter');
+
+    const search = searchEl ? searchEl.value : '';
+    const branch = branchEl ? branchEl.value : 'All';
+
+    let url = `${API_URL}?q=${encodeURIComponent(search)}`;
+    if (branch !== 'All') url += `&branch=${encodeURIComponent(branch)}`;
+
+    fetch(url)
+        .then(res => res.json())
+        .then(data => renderInventoryCards(data))
+        .catch(err => console.error("Inventory Fetch Error:", err));
 }
 
+// //////////////////////////////////////// //
+//      COMPACT & THEMED INVENTORY CARDS      //
+// //////////////////////////////////////// //
 function renderInventoryCards(items) {
     const container = document.getElementById('inventoryCards');
     const emptyState = document.getElementById('inventoryEmptyState');
@@ -389,7 +529,8 @@ function renderInventoryCards(items) {
         const uniqueId = rawString.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
         card.id = `card-${uniqueId}`;
 
-        card.className = "group relative flex flex-col justify-between rounded-3xl bg-white/60 backdrop-blur-2xl border border-white/50 shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer overflow-hidden h-full";
+        // Compact container with smaller border radius
+        card.className = "group relative flex flex-col justify-between rounded-2xl bg-white border border-slate-100 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer overflow-hidden h-full";
         card.onclick = () => openItemDetails(item);
 
         const isLow = (item.quantity || 0) <= (item.reorder_level || 0);
@@ -397,60 +538,67 @@ function renderInventoryCards(items) {
         const safeBranch = (item.branch || '').replace(/'/g, "\\'");
 
         card.innerHTML = `
-          <div class="h-1.5 w-full bg-gradient-to-r ${isLow ? 'from-rose-500 to-orange-400' : 'from-emerald-400 to-teal-500'}"></div>
-          <div class="p-5 flex-1 flex flex-col">
-              <div class="flex justify-between items-start mb-4">
-                  <div>
-                      <h3 class="font-extrabold text-slate-800 text-lg leading-tight mb-1 group-hover:text-indigo-600 transition-colors">${item.name}</h3>
-                      <span class="inline-flex items-center justify-center px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">${item.branch || 'General'}</span>
+          <div class="h-1 w-full ${isLow ? 'bg-rose-500' : 'bg-brand-600'}"></div>
+          
+          <div class="p-4 flex-1 flex flex-col">
+              <div class="flex justify-between items-start mb-3">
+                  <div class="max-w-[70%]">
+                      <h3 class="font-bold text-slate-800 text-sm leading-tight group-hover:text-brand-600 transition-colors truncate">${item.name}</h3>
+                      <span class="inline-flex px-1.5 py-0.5 rounded bg-brand-50 border border-brand-100 text-[9px] font-bold text-brand-600 uppercase tracking-wider mt-1">${item.branch || 'General'}</span>
                   </div>
-                  <div class="flex flex-col items-end">
-                      <span class="text-3xl font-black ${isLow ? 'text-rose-500' : 'text-slate-700'} tracking-tight">${item.quantity || 0}</span>
-                      <span class="text-[9px] text-slate-400 font-bold uppercase">In Stock</span>
-                  </div>
-              </div>
-              <div class="grid grid-cols-2 gap-2 mb-5">
-                  <div class="bg-white/50 rounded-xl p-2 border border-white/60">
-                      <span class="block text-[9px] uppercase text-slate-400 font-bold mb-0.5">Category</span>
-                      <span class="text-xs font-semibold text-slate-600 truncate block">${item.category || '-'}</span>
-                  </div>
-                   <div class="bg-white/50 rounded-xl p-2 border border-white/60">
-                      <span class="block text-[9px] uppercase text-slate-400 font-bold mb-0.5">Reorder Lvl</span>
-                      <div class="flex items-center gap-1">
-                          <span class="text-xs font-semibold text-slate-600">${item.reorder_level || 0}</span>
-                          ${isLow ? '<span class="text-[9px] text-rose-500 font-bold animate-pulse">!</span>' : ''}
-                      </div>
+                  <div class="text-right">
+                      <span class="text-xl font-black ${isLow ? 'text-rose-600' : 'text-slate-700'} tracking-tight">${item.quantity || 0}</span>
+                      <span class="block text-[8px] text-slate-400 font-bold uppercase">Stock</span>
                   </div>
               </div>
-              <div class="mt-auto flex items-center gap-2 pt-4 border-t border-slate-100">
-                  <button onclick="event.stopPropagation(); openEditStockModal('${safeName}', '${safeBranch}', ${item.quantity || 0})" 
-                      class="flex-1 py-2 rounded-xl bg-white border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 hover:border-slate-300 transition shadow-sm">
-                      Edit
-                  </button>
-                  <button onclick="event.stopPropagation(); openRestockModal('${safeName}', '${safeBranch}', ${item.quantity || 0})" 
-                      class="flex-[1.5] flex items-center justify-center gap-1.5 py-2 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100 text-xs font-bold hover:bg-indigo-600 hover:text-white transition">
-                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                      Reorder
-                  </button>
-                  <button onclick="event.stopPropagation(); confirmDelete('${safeName}')" 
-                      class="flex-none w-9 h-9 flex items-center justify-center rounded-xl bg-rose-50 text-rose-400 border border-rose-100 hover:bg-rose-500 hover:text-white transition" title="Delete Item">
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                  </button>
+
+              <div class="grid grid-cols-2 gap-2 mb-4">
+                  <div class="bg-slate-50/50 rounded-lg p-1.5 border border-slate-100">
+                      <span class="block text-[8px] uppercase text-slate-400 font-bold">Category</span>
+                      <span class="text-[10px] font-semibold text-slate-600 truncate block">${item.category || '-'}</span>
+                  </div>
+                   <div class="bg-slate-50/50 rounded-lg p-1.5 border border-slate-100">
+                      <span class="block text-[8px] uppercase text-slate-400 font-bold">Reorder</span>
+                      <span class="text-[10px] font-semibold text-slate-600">${item.reorder_level || 0}</span>
+                  </div>
               </div>
+
+              <div class="mt-auto grid grid-cols-[1fr_1fr_auto] gap-2 pt-3 border-t border-slate-50">
+                <button onclick="event.stopPropagation(); openEditStockModal('${safeName}', '${safeBranch}', ${item.quantity || 0})" 
+                    class="py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-[10px] font-bold hover:bg-brand-50 hover:text-brand-900 transition">
+                    Edit
+                </button>
+                <button onclick="event.stopPropagation(); openRestockModal('${safeName}', '${safeBranch}', ${item.quantity || 0})" 
+                    class="py-1.5 rounded-lg bg-brand-600 text-white text-[10px] font-bold shadow-sm hover:bg-brand-700 transition">
+                    Order
+                </button>
+                <button onclick="event.stopPropagation(); confirmDelete('${safeName}')" 
+                    class="w-8 h-8 flex items-center justify-center rounded-lg bg-rose-50 text-rose-400 hover:bg-rose-500 hover:text-white transition">
+                    <i class="fas fa-trash-alt text-[9px]"></i>
+                </button>
+            </div>
           </div>`;
+
         container.appendChild(card);
 
-        // Highlight
+
+        // ➤ CRITICAL: Highlight Logic
+        // Checks if the global pendingHighlight ID matches this card's unique ID
         if (window.pendingHighlight && window.pendingHighlight.id === uniqueId) {
             setTimeout(() => {
                 const target = document.getElementById(`card-${uniqueId}`);
                 if (target) {
                     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    target.classList.add('highlight-pulse');
-                    setTimeout(() => target.classList.remove('highlight-pulse'), 2500);
+                    // Add yellow ring and flash animation
+                    target.classList.add('highlight-pulse', 'ring-4', 'ring-amber-400', 'ring-offset-2');
+
+                    // Remove after 3 seconds
+                    setTimeout(() => {
+                        target.classList.remove('highlight-pulse', 'ring-4', 'ring-amber-400', 'ring-offset-2');
+                    }, 3000);
                 }
-            }, 500);
-            window.pendingHighlight = null;
+            }, 600); // 600ms delay to ensure DOM is ready
+            window.pendingHighlight = null; // Clear it so it doesn't flash again on next reload
         }
     });
 }
@@ -486,13 +634,13 @@ function updateBranchSelect(branches) {
     container.innerHTML = '';
     container.innerHTML += `
         <button onclick="selectBranch('All', 'All branches')" 
-            class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 transition">
+            class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-bold text-slate-700 hover:bg-[#7D8C7D]/20 hover:text-brand-600 transition">
             All branches
         </button>`;
     branches.forEach(b => {
         container.innerHTML += `
             <button onclick="selectBranch('${b.name}', '${b.name}')" 
-                class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 transition">
+                class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-[#7D8C7D]/20 hover:text-brand-600 transition">
                 ${b.name}
             </button>`;
     });
@@ -505,129 +653,205 @@ window.addEventListener('click', (e) => {
 
     // 1. Navbar Dropdowns
     const isInsideNav = e.target.closest('[data-menu-root]');
-    if (!isInsideNav) {
-        closeAllDropdowns();
-    }
+    if (!isInsideNav) closeAllDropdowns();
 
-    // 2. Inventory Branch Filter (iBtn)
+    // 2. Inventory Branch Filter
     const iBtn = document.getElementById('branchDropdownBtn');
     const iMenu = document.getElementById('branchDropdownOptions');
-    if (iBtn && iMenu && !iBtn.contains(e.target) && !iMenu.contains(e.target)) {
-        iMenu.classList.add('hidden');
-    }
+    if (iBtn && iMenu && !iBtn.contains(e.target) && !iMenu.contains(e.target)) iMenu.classList.add('hidden');
 
-    // 3. Restock Supplier Dropdown (rBtn)
+    // 3. Restock Supplier Dropdown
     const rBtn = document.getElementById('restockSupplierBtn');
     const rMenu = document.getElementById('restockSupplierOptions');
-    if (rBtn && rMenu && !rBtn.contains(e.target) && !rMenu.contains(e.target)) {
-        rMenu.classList.add('hidden');
-    }
+    if (rBtn && rMenu && !rBtn.contains(e.target) && !rMenu.contains(e.target)) rMenu.classList.add('hidden');
 
-    // 4. Batch Branch Dropdown (bBtn)
-    const bBtn = document.getElementById('batchBranchBtn');
-    const bMenu = document.getElementById('batchBranchOptions');
-    if (bBtn && bMenu && !bBtn.contains(e.target) && !bMenu.contains(e.target)) {
-        bMenu.classList.add('hidden');
-    }
+    // 4. Batch Modal: Branch Dropdown
+    const bBranchBtn = document.getElementById('batchBranchBtn');
+    const bBranchMenu = document.getElementById('batchBranchOptions');
+    if (bBranchBtn && bBranchMenu && !bBranchBtn.contains(e.target) && !bBranchMenu.contains(e.target)) bBranchMenu.classList.add('hidden');
 
-    // 5. Create User - Role Dropdown (RENAMED to roleBtn)
-    const roleBtn = document.getElementById('roleDropdownBtn');
-    const roleMenu = document.getElementById('roleDropdownOptions');
-    if (roleBtn && roleMenu && !roleBtn.contains(e.target) && !roleMenu.contains(e.target)) {
-        roleMenu.classList.add('hidden');
-    }
+    // 5. Batch Modal: Category Dropdown (NEW)
+    const bCatBtn = document.getElementById('batchCategoryBtn');
+    const bCatMenu = document.getElementById('batchCategoryOptions');
+    if (bCatBtn && bCatMenu && !bCatBtn.contains(e.target) && !bCatMenu.contains(e.target)) bCatMenu.classList.add('hidden');
 
-    // 6. Create User - Branch Dropdown (RENAMED to uBranchBtn)
+    // 6. Edit Stock: Action Dropdown (NEW)
+    const eActBtn = document.getElementById('editActionBtn');
+    const eActMenu = document.getElementById('editActionOptions');
+    if (eActBtn && eActMenu && !eActBtn.contains(e.target) && !eActMenu.contains(e.target)) eActMenu.classList.add('hidden');
+
+    // 7. Edit Stock: Reason Dropdown (NEW)
+    const eReaBtn = document.getElementById('editReasonBtn');
+    const eReaMenu = document.getElementById('editReasonOptions');
+    if (eReaBtn && eReaMenu && !eReaBtn.contains(e.target) && !eReaMenu.contains(e.target)) eReaMenu.classList.add('hidden');
+
+    // 8. User: Role & Branch
+    const uRoleBtn = document.getElementById('roleDropdownBtn');
+    const uRoleMenu = document.getElementById('roleDropdownOptions');
+    if (uRoleBtn && uRoleMenu && !uRoleBtn.contains(e.target) && !uRoleMenu.contains(e.target)) uRoleMenu.classList.add('hidden');
+
     const uBranchBtn = document.getElementById('userBranchBtn');
     const uBranchMenu = document.getElementById('userBranchOptions');
-    if (uBranchBtn && uBranchMenu && !uBranchBtn.contains(e.target) && !uBranchMenu.contains(e.target)) {
-        uBranchMenu.classList.add('hidden');
-    }
+    if (uBranchBtn && uBranchMenu && !uBranchBtn.contains(e.target) && !uBranchMenu.contains(e.target)) uBranchMenu.classList.add('hidden');
 });
 
-// ==========================================
-// 5. NOTIFICATION & ALERTS (FIXED)
-// ==========================================
 
 // 1. Handle clicking the "Body" of the notification (Navigation)
 function handleNotificationClick(itemName, branchName) {
     console.log(`Navigating to: ${itemName} (${branchName})`);
     closeAllDropdowns();
 
-    // Generate ID using STRICT matching
+    // 1. Generate a Safe ID (Must match renderInventoryCards logic)
+    // Remove all special characters/spaces to ensure a match
     const rawString = `${itemName}-${branchName || 'general'}`;
     const cleanId = rawString.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
-    // Set global highlight target
+    // 2. Set global highlight target
     window.pendingHighlight = { id: cleanId };
 
-    // Navigate
+    // 3. Navigate to Inventory
     showPage('inventory');
 
-    // Reset filters so the item is visible
+    // 4. Reset Branch Filter so the item isn't hidden
     const branchSelect = document.getElementById('branchFilter');
     if (branchSelect) {
-        branchSelect.value = '';
-        const event = new Event('change');
-        branchSelect.dispatchEvent(event);
+        branchSelect.value = 'All'; // Force to 'All' to ensure visibility
+        document.getElementById('branchLabel').textContent = 'All branches';
     }
 
-    // Refresh inventory to ensure data is loaded
+    // 5. Refresh inventory (This will trigger the highlight in renderInventoryCards)
     fetchInventory();
 }
 
-function handleLocalAcknowledge(type, id) {
-    // 1. Visual Feedback
-    showToast("Alert Acknowledged");
 
-    // 2. SAVE TO LOCAL STORAGE (Persistence)
-    // We store the ID in a list of "dismissed" items so it doesn't come back on refresh
-    const dismissed = JSON.parse(localStorage.getItem('premierlux_dismissed') || '[]');
-    if (!dismissed.includes(id)) {
-        dismissed.push(id);
-        localStorage.setItem('premierlux_dismissed', JSON.stringify(dismissed));
-    }
+// Section: Activity Logs Renderer
+async function fetchActivityLogs() {
+    const tbody = document.getElementById('activityLogsTableBody');
+    const tableHeader = document.querySelector('#admin-logs-section thead'); // target the header to color it
 
-    // 3. Remove from local state immediately (Optimistic UI)
-    if (type === 'stock') {
-        window.bellState.lowStockItems = window.bellState.lowStockItems.filter(i => i.name !== id);
-    } else if (type === 'expiry') {
-        window.bellState.expiringItems = window.bellState.expiringItems.filter(i => {
-            const iId = i.id || i._id || i.batch_number || 'unknown';
-            return iId !== id;
+    if (!tbody) return;
+
+    // Apply Purple Theme to Header if found
+    if (tableHeader) {
+        tableHeader.className = "bg-purple-50 border-b border-purple-100";
+        tableHeader.querySelectorAll('th').forEach(th => {
+            th.className = "px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider";
         });
     }
 
-    // 4. Re-render
-    renderSharedBell();
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center py-10"><i class="fas fa-circle-notch fa-spin text-purple-500"></i> Syncing...</td></tr>';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/activity-logs`, { credentials: 'include' });
+        const logs = await res.json();
+
+        tbody.innerHTML = '';
+        if (logs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-10 text-slate-400">No recent activity.</td></tr>';
+            return;
+        }
+
+        logs.forEach(log => {
+            const date = new Date(log.timestamp).toLocaleString();
+
+            // Determine Badge Color (Purple for everything based on your image)
+            const badgeClass = "bg-purple-100 text-purple-800 border border-purple-200";
+
+            tbody.innerHTML += `
+            <tr class="hover:bg-purple-50/30 transition border-b border-gray-100 last:border-0">
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-medium font-mono">
+                    ${date}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800">
+                    ${log.user}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium ${badgeClass}">
+                        ${log.action}
+                    </span>
+                </td>
+                <td class="px-6 py-4 text-sm text-gray-600">
+                    ${log.details}
+                </td>
+            </tr>`;
+        });
+    } catch (err) {
+        console.error(err);
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center py-10 text-rose-500">Error loading logs.</td></tr>';
+    }
 }
 
-// 3. Fetch System Alerts (from Backend)
 function fetchAlertsForBell() {
-    fetch(ALERTS_API_URL)
+    fetch(ALERTS_API_URL, { credentials: 'include' })
         .then(res => res.json())
         .then(alerts => {
             if (window.updateApiAlerts) window.updateApiAlerts(alerts);
-            renderSharedBell(); // Render after fetching
+            renderSharedBell();
         })
-        .catch(err => console.error('Error fetching alerts', err));
+        .catch(err => console.error('Error fetching alerts:', err));
 }
 
-// 4. Render the Dropdown Content (Desktop & Mobile)
+async function acknowledgeAlert(alertId, itemName, branchName) {
+    try {
+        // 1. Backend Acknowledge (For Logs & Cloud Persistence)
+        const res = await fetch(`${API_BASE}/api/alerts/${alertId}/acknowledge`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                log_detail: `User dismissed alert for ${itemName} - ${branchName}`
+            }),
+            credentials: 'include'
+        });
+
+        if (res.ok) {
+            showToast("Alert Acknowledged & Logged");
+
+            // 2. Local Storage Persistence (CRITICAL FIX)
+            // We must add this ID to the local 'dismissed' list so the frontend 
+            // knows to hide it even after a page refresh.
+            const dismissed = JSON.parse(localStorage.getItem('premierlux_dismissed') || '[]');
+            if (!dismissed.includes(alertId)) {
+                dismissed.push(alertId);
+                localStorage.setItem('premierlux_dismissed', JSON.stringify(dismissed));
+            }
+
+            // 3. Update UI State (Remove immediately)
+            window.bellState.apiAlerts = window.bellState.apiAlerts.filter(a => a.id !== alertId);
+
+            // Filter Low Stock
+            window.bellState.lowStockItems = window.bellState.lowStockItems.filter(i => i.name !== alertId);
+
+            // Filter Expiry Items (Check all possible ID fields)
+            window.bellState.expiringItems = window.bellState.expiringItems.filter(i => {
+                const iId = i.id || i._id || i.batch_number || 'unknown';
+                return iId !== alertId;
+            });
+
+            renderSharedBell(); // Refresh the bell UI
+        }
+    } catch (err) {
+        console.error("Acknowledge Error:", err);
+    }
+}
+
+// //////////////////////////////////////// //
+//      5. NOTIFICATION BELL MODULE          //
+// //////////////////////////////////////// //
+
 function renderSharedBell() {
     const alertBadge = document.getElementById('alertsBadge');
-
-    // Target BOTH lists
     const desktopList = document.getElementById('alertsDropdownList');
     const mobileList = document.getElementById('mobileAlertsList');
 
-    // Counts
+    // Safety check
+    if (!desktopList && !mobileList) return;
+
     const lowCount = window.bellState.lowStockItems.length;
     const expCount = window.bellState.expiringItems.length;
     const apiCount = window.bellState.apiAlerts.length;
     const totalAlerts = lowCount + expCount + apiCount;
 
-    // Update Red Badge (Desktop Icon)
+    // 1. Update Badge Visibility
     if (alertBadge) {
         alertBadge.textContent = totalAlerts > 9 ? '9+' : totalAlerts;
         if (totalAlerts > 0) {
@@ -638,108 +862,123 @@ function renderSharedBell() {
         }
     }
 
-    // Helper to clear and set content for both lists
-    const setContent = (html) => {
-        if (desktopList) desktopList.innerHTML = html;
-        if (mobileList) mobileList.innerHTML = html;
-    };
-
+    // 2. Prepare HTML Content
     const appendContent = (html) => {
         if (desktopList) desktopList.innerHTML += html;
         if (mobileList) mobileList.innerHTML += html;
     };
 
-    // 1. Handle Empty State
-    if (totalAlerts === 0) {
-        setContent(`
-            <div class="flex flex-col items-center justify-center py-4 text-slate-500 opacity-60">
-                <span class="text-xl">🎉</span>
-                <span class="text-[10px] mt-1">All caught up!</span>
-            </div>
-        `);
-        return;
-    }
-
-    // Clear lists before adding new items
+    // Reset Lists
     if (desktopList) desktopList.innerHTML = '';
     if (mobileList) mobileList.innerHTML = '';
 
-    // --- ROW CREATOR HELPER ---
-    const createNotificationRow = (type, branch, item, detail, colorClass, btnCallback) => {
-        const safeItem = (item || 'Unknown Item').toString().replace(/'/g, "\\'");
-        const safeBranch = (branch || 'General').toString().replace(/'/g, "\\'");
+    // 3. Handle Empty State
+    if (totalAlerts === 0) {
+        const emptyHtml = `
+            <div class="flex flex-col items-center justify-center py-8 text-slate-400 opacity-60">
+                <span class="text-2xl mb-2">🎉</span>
+                <span class="text-xs font-bold uppercase tracking-wide">All caught up!</span>
+            </div>`;
+        if (desktopList) desktopList.innerHTML = emptyHtml;
+        if (mobileList) mobileList.innerHTML = emptyHtml;
+        return;
+    }
 
-        return `
-        <div class="group mb-2 bg-slate-800/50 hover:bg-slate-800 border border-white/5 rounded-xl overflow-hidden transition-all duration-200">
-            <div class="flex items-center justify-between px-3 py-2 bg-white/5 border-b border-white/5">
-                <div class="flex items-center gap-2 overflow-hidden">
-                    <span class="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md ${colorClass}">
-                        ${type}
-                    </span>
-                    <span class="text-[10px] text-slate-400 font-medium truncate max-w-[100px]" title="${branch}">
-                        ${branch || 'General'}
-                    </span>
-                </div>
-                <button onclick="${btnCallback}; event.stopPropagation();" 
-                    class="text-slate-500 hover:text-emerald-400 transition-colors p-1 rounded-full hover:bg-white/10" 
-                    title="Acknowledge">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905 0 .714-.211 1.412-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5"></path></svg>
-                </button>
-            </div>
-            <div onclick="handleNotificationClick('${safeItem}', '${safeBranch}'); toggleMobileMenu();" 
-                 class="px-3 py-2 cursor-pointer hover:bg-white/5 transition">
-                <div class="flex justify-between items-center">
-                    <span class="text-sm font-semibold text-slate-200">${item || 'Unknown Item'}</span>
-                    <span class="text-[10px] text-slate-400 font-mono">${detail}</span>
-                </div>
-            </div>
-        </div>`;
-    };
+    // 4. Render Items
 
     // A. Expiring Items
     window.bellState.expiringItems.forEach(item => {
         const daysLeft = item.daysLeft;
-        const isExpired = daysLeft < 0;
-        const badgeText = isExpired ? "Expired" : "Expiring";
-        const detailText = isExpired ? `Expired ${Math.abs(daysLeft)} days ago` : `${daysLeft} days left`;
-        const badgeColor = isExpired ? "bg-red-500/20 text-red-400" : "bg-orange-500/20 text-orange-400";
+        const badgeColor = daysLeft < 0 ? "bg-red-100 text-red-600 border border-red-200" : "bg-orange-100 text-orange-600 border border-orange-200";
+        const badgeText = daysLeft < 0 ? "Expired" : "Expiring";
+        const detailText = daysLeft < 0 ? `Expired ${Math.abs(daysLeft)}d ago` : `${daysLeft} days left`;
+
         const itemId = item.id || item._id || item.batch_number || 'unknown';
+
+        // Prepare safe strings
+        const safeName = (item.item_name || 'Item').replace(/'/g, "\\'");
+        const safeBranch = (item.branch || 'General').replace(/'/g, "\\'");
 
         appendContent(createNotificationRow(
             badgeText, item.branch, item.item_name, detailText, badgeColor,
-            `handleLocalAcknowledge('expiry', '${itemId}')`
+            // ➤ FIX: Pass safeName and safeBranch arguments here!
+            `acknowledgeAlert('${itemId}', '${safeName}', '${safeBranch}')`
         ));
     });
 
     // B. Low Stock Items
     window.bellState.lowStockItems.forEach(item => {
+        // Prepare safe strings
+        const safeName = (item.name || 'Item').replace(/'/g, "\\'");
+        const safeBranch = (item.branch || 'General').replace(/'/g, "\\'");
+
         appendContent(createNotificationRow(
-            "Low Stock", item.branch, item.name, `${item.quantity} units left`,
-            "bg-rose-500/20 text-rose-400",
-            `handleLocalAcknowledge('stock', '${item.name}')`
+            "Low Stock", item.branch, item.name, `${item.quantity} units remaining`,
+            "bg-rose-100 text-rose-600 border border-rose-200",
+            // ➤ FIX: Pass safeName and safeBranch here too!
+            `acknowledgeAlert('${item.name}', '${safeName}', '${safeBranch}')`
         ));
     });
 
     // C. System Alerts
     window.bellState.apiAlerts.forEach(alert => {
+        const safeTitle = (alert.title || 'System Alert').replace(/'/g, "\\'");
+
         appendContent(createNotificationRow(
-            "System", "Admin", alert.title, "Action required",
-            "bg-indigo-500/20 text-indigo-400",
-            `acknowledgeAlert('${alert.id}')`
+            "System", "Admin", alert.title, "Action Required",
+            "bg-[#7D8C7D]/20 text-[#5E4074] border border-[#7D8C7D]/30",
+            // ➤ FIX: Pass Title and 'System' as branch
+            `acknowledgeAlert('${alert.id}', '${safeTitle}', 'System')`
         ));
     });
 }
 
+// ✨ UI HELPER: Clean Light Theme Card (Matches your Linen/Wine design)
+function createNotificationRow(type, branch, item, detail, colorClass, btnCallback) {
+    const safeItem = (item || 'Unknown Item').toString().replace(/'/g, "\\'");
+    const safeBranch = (branch || 'General').toString().replace(/'/g, "\\'");
+
+    return `
+    <div class="group mb-2 bg-white border border-slate-100 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-200">
+        <div class="flex items-center justify-between px-3 py-2 bg-slate-50/50 border-b border-slate-100">
+            <div class="flex items-center gap-2 overflow-hidden">
+                <span class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${colorClass}">
+                    ${type}
+                </span>
+                <span class="text-[10px] text-slate-400 font-bold truncate max-w-[100px]" title="${branch}">
+                    ${branch || 'General'}
+                </span>
+            </div>
+            <button onclick="${btnCallback}; event.stopPropagation();" 
+                class="text-slate-300 hover:text-[#5E4074] hover:bg-slate-100 p-1.5 rounded-full transition-colors" 
+                title="Mark as Read">
+                <i class="fas fa-check text-xs"></i>
+            </button>
+        </div>
+        <div onclick="handleNotificationClick('${safeItem}', '${safeBranch}')"
+       class="px-3 py-2.5 cursor-pointer hover:bg-#F5F0F9 transition-colors group-hover:border-l-4 group-hover;border-l-5E4074">
+            <div class="flex flex-col">
+                <span class="text-xs font-bold text-slate-700 leading-tight mb-0.5">${item || 'Unknown Item'}</span>
+                <span class="text-[10px] text-slate-500 font-medium flex items-center gap-1">
+                    <i class="fas fa-info-circle text-[8px] opacity-70"></i> ${detail}
+                </span>
+            </div>
+        </div>
+    </div>`;
+}
+
+// //////////////////////////////////////// //
+//      📦 SYNC HELPERS (Data Handlers)      //
+// //////////////////////////////////////// //
+
 window.updateLowStock = function (data) {
     if (!data) return;
-
-    // Get dismissed IDs
     const dismissed = JSON.parse(localStorage.getItem('premierlux_dismissed') || '[]');
 
     window.bellState.lowStockItems = data.filter(i => {
         const isLow = (i.quantity || 0) <= (i.reorder_level || 0);
         const isDismissed = dismissed.includes(i.name);
-        return isLow && !isDismissed; // Only show if Low AND Not Dismissed
+        return isLow && !isDismissed;
     });
 
     renderSharedBell();
@@ -747,18 +986,17 @@ window.updateLowStock = function (data) {
 
 window.updateApiAlerts = function (alerts) {
     if (!alerts) return;
+    // Filter out internal alert types that are handled by frontend logic
     window.bellState.apiAlerts = alerts.filter(a => a.type !== 'low_stock' && a.type !== 'expiry_risk');
     renderSharedBell();
 };
 
 window.updateExpiryAndBell = function (batchData) {
     if (!batchData || !Array.isArray(batchData)) return;
-
     const today = new Date();
     const dismissed = JSON.parse(localStorage.getItem('premierlux_dismissed') || '[]');
 
     window.bellState.expiringItems = [];
-
     batchData.forEach(item => {
         const dateString = item.exp_date || item.expiration_date;
         if (dateString) {
@@ -766,11 +1004,9 @@ window.updateExpiryAndBell = function (batchData) {
             if (!isNaN(expDate)) {
                 const diffTime = expDate - today;
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-                // Identify the item uniquely
                 const itemId = item.id || item._id || item.batch_number || 'unknown';
 
-                // Check if expiring (<= 30 days) AND Not Dismissed
+                // Alert if expiring within 30 days
                 if (diffDays <= 30 && !dismissed.includes(itemId)) {
                     window.bellState.expiringItems.push({ ...item, daysLeft: diffDays });
                 }
@@ -778,34 +1014,87 @@ window.updateExpiryAndBell = function (batchData) {
         }
     });
 
-    // Update KPI Card
+    // Update Dashboard Counter if it exists
     const dashExpiringEl = document.getElementById('dash-expiring');
     if (dashExpiringEl) {
         dashExpiringEl.textContent = window.bellState.expiringItems.length;
     }
-
     renderSharedBell();
 };
 
+// //////////////////////////////////////// //
+//      📦 BATCH & EXPIRY DATA FETCHING      //
+// //////////////////////////////////////// //
 function fetchBatchesForAlerts() {
     fetch(`${API_BASE}/api/batches`)
         .then(r => r.json())
-        .then(data => { if (window.updateExpiryAndBell) window.updateExpiryAndBell(data); });
+        .then(data => {
+            if (window.updateExpiryAndBell) {
+                window.updateExpiryAndBell(data);
+            }
+        })
+        .catch(err => console.error("Error fetching batches for alerts:", err));
 }
 
+fetch(`${API_BASE}/api/batches`)
+    .then(r => r.json())
+    .then(data => {
+        if (window.updateExpiryAndBell) {
+            window.updateExpiryAndBell(data);
+        }
+    })
+    .catch(err => console.error("Error fetching batches for alerts:", err));
 
-// ==========================================
-// 6. ADD BATCH MODAL
-// ==========================================
+
+
+// //////////////////////////////////////// //
+//      ADD BATCH MODAL (Branch Auto-Detect)  //
+// //////////////////////////////////////// //
 
 function openBatchOverlay() {
     const overlay = document.getElementById('batchOverlay');
     if (overlay) overlay.classList.remove('hidden');
-    // Sync logic
-    fetchBranches(branches => {
-        if (typeof updateBranchSelect === 'function') updateBranchSelect(branches);
-        updateBatchBranchSelect(branches);
-    });
+
+    const btn = document.getElementById('batchBranchBtn');
+    const label = document.getElementById('batchBranchLabel');
+    const input = document.getElementById('batch_branch');
+
+    // 🔒 STAFF LOGIC: Auto-detect & Lock
+    if (currentUser && currentUser.role === 'staff') {
+        // 1. Force the hidden input value to their branch
+        if (input) input.value = currentUser.branch;
+
+        // 2. Lock the UI (Grey out button, add lock icon)
+        if (btn) {
+            btn.onclick = null; // Disable clicking
+            btn.classList.add('bg-slate-50', 'text-slate-400', 'cursor-not-allowed');
+            btn.classList.remove('bg-white', 'text-slate-700');
+
+            // Update label with Lock Icon
+            btn.innerHTML = `<span id="batchBranchLabel" class="flex items-center gap-2"><i class="fas fa-lock text-[10px]"></i> ${currentUser.branch}</span>`;
+        }
+
+    } else {
+        // 🔓 ADMIN/OWNER LOGIC: Allow Selection
+
+        // 1. Enable Clicking
+        if (btn) {
+            btn.onclick = toggleBatchBranchMenu; // Restore click event
+            btn.classList.remove('bg-slate-50', 'text-slate-400', 'cursor-not-allowed');
+            btn.classList.add('bg-white', 'text-slate-700');
+
+            // Restore "Select..." text if empty
+            if (input && !input.value) {
+                btn.innerHTML = `<span id="batchBranchLabel">Select...</span> ▼`;
+            }
+        }
+
+        // 2. Fetch and Populate Branch List
+        fetchBranches(branches => {
+            if (typeof updateBranchSelect === 'function') updateBranchSelect(branches);
+            updateBatchBranchSelect(branches);
+        });
+    }
 }
 
 function closeBatchOverlay() {
@@ -820,7 +1109,7 @@ function updateBatchBranchSelect(branches) {
     branches.forEach(b => {
         container.innerHTML += `
             <button type="button" onclick="selectBatchBranch('${b.name}')" 
-                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 transition">
+                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-[#7D8C7D]/20 hover:text-brand-600 transition">
                 ${b.name}
             </button>`;
     });
@@ -844,12 +1133,37 @@ function selectBatchBranch(branchName) {
 
 async function submitBatchForm(e) {
     e.preventDefault();
-    // ... (Gathering payload logic remains the same) ...
+
+    // 1. Grab values specifically
+    const branchValue = document.getElementById('batch_branch').value;
+    const itemName = document.getElementById('batch_item_name').value;
+
+    // 2. Validate Frontend Side First
+    if (!branchValue) {
+        alert("Please select a branch first.");
+        return;
+    }
+    if (!itemName) {
+        alert("Item name is required.");
+        return;
+    }
+
+    // 3. Construct Payload (Ensure keys match what Python expects)
     const payload = {
-        item_name: document.getElementById('batch_item_name').value.trim(),
-        // ... other fields ...
-        exp_date: document.getElementById('batch_exp_date').value, // Ensure this is getting value
-        // ...
+        item_name: itemName,
+        branch: branchValue, // <--- Crucial Fix
+        sku: document.getElementById('batch_sku').value,
+        monthly_usage: Number(document.getElementById('batch_monthly_usage').value),
+        current_stock: Number(document.getElementById('batch_current_stock').value),
+        reorder_level: Number(document.getElementById('batch_reorder_level').value),
+        price: Number(document.getElementById('batch_price').value),
+        batch_number: document.getElementById('batch_batch_number').value,
+        lot_number: document.getElementById('batch_lot_number').value,
+        mfg_date: document.getElementById('batch_mfg_date').value,
+        exp_date: document.getElementById('batch_exp_date').value,
+        supplier_batch: document.getElementById('batch_supplier_batch').value,
+        qr_code_id: document.getElementById('batch_qr_code_id').value,
+        category: document.getElementById('itemCategory').value
     };
 
     try {
@@ -859,24 +1173,70 @@ async function submitBatchForm(e) {
             body: JSON.stringify(payload)
         });
 
+        const data = await res.json();
+
         if (!res.ok) {
-            const data = await res.json(); // Safely get error message
             throw new Error(data.error || "Failed to add batch");
         }
 
         showToast('Batch successfully added!');
         closeBatchOverlay();
 
-        // ➤ REFRESH DATA (Add these lines)
-        fetchInventory();           // Updates the main cards
-        fetchBatchesForAlerts();    // ➤ THIS UPDATES THE EXPIRING NOTIFICATIONS
+        // Refresh Data
+        fetchInventory();
+        fetchBatchesForAlerts();
+        if (typeof initDashboard === 'function') initDashboard();
 
-        if (typeof initDashboard === 'function') initDashboard(); // Refreshes charts
+        // Reset Form
+        document.getElementById('batchForm').reset();
+        document.getElementById('batchBranchLabel').textContent = "Select branch...";
+        document.getElementById('batch_branch').value = "";
 
     } catch (err) {
         console.error(err);
         alert(err.message);
     }
+}
+
+
+// --- BATCH CATEGORY DROPDOWN ---
+function toggleBatchCategoryMenu() {
+    const menu = document.getElementById('batchCategoryOptions');
+    // Close branch menu if open
+    document.getElementById('batchBranchOptions').classList.add('hidden');
+    if (menu) menu.classList.toggle('hidden');
+}
+
+function selectBatchCategory(value) {
+    document.getElementById('itemCategory').value = value;
+    document.getElementById('batchCategoryLabel').textContent = value;
+    document.getElementById('batchCategoryOptions').classList.add('hidden');
+}
+
+// --- EDIT STOCK ACTION DROPDOWN ---
+function toggleEditActionMenu() {
+    const menu = document.getElementById('editActionOptions');
+    document.getElementById('editReasonOptions').classList.add('hidden');
+    if (menu) menu.classList.toggle('hidden');
+}
+
+function selectEditAction(value, label) {
+    document.getElementById('edit_action').value = value;
+    document.getElementById('editActionLabel').textContent = label;
+    document.getElementById('editActionOptions').classList.add('hidden');
+}
+
+// --- EDIT STOCK REASON DROPDOWN ---
+function toggleEditReasonMenu() {
+    const menu = document.getElementById('editReasonOptions');
+    document.getElementById('editActionOptions').classList.add('hidden');
+    if (menu) menu.classList.toggle('hidden');
+}
+
+function selectEditReason(value, label) {
+    document.getElementById('edit_reason_cat').value = value;
+    document.getElementById('editReasonLabel').textContent = label;
+    document.getElementById('editReasonOptions').classList.add('hidden');
 }
 
 
@@ -913,7 +1273,7 @@ function updateRestockSupplierSelect(suppliers) {
     else suppliers.forEach(s => {
         container.innerHTML += `
             <button type="button" onclick="selectRestockSupplier('${s.name}')" 
-                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 transition flex justify-between items-center">
+                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-[#7D8C7D]/20 hover:text-brand-600 transition flex justify-between items-center">
                 <span>${s.name}</span><span class="text-[10px] text-slate-400">${s.lead_time_days || '?'} days</span>
             </button>`;
     });
@@ -981,81 +1341,45 @@ async function fetchSuppliers() {
     } catch (e) { console.error("Fetch Error:", e); }
 }
 
+// //////////////////////////////////////// //
+//      THEMED SUPPLIER CARD RENDERER        //
+// //////////////////////////////////////// //
 function renderSupplierCards(suppliers) {
     const grid = document.getElementById('suppliersGrid');
     if (!grid) return;
     grid.innerHTML = '';
 
-    if (!suppliers || suppliers.length === 0) {
-        grid.innerHTML = `<div class="col-span-full text-center py-10 text-slate-400">No suppliers found.</div>`;
-        return;
-    }
-
     suppliers.forEach(s => {
         const initial = s.name.charAt(0).toUpperCase();
         const safeName = s.name.replace(/'/g, "\\'");
-        const safeContact = (s.contact || '').replace(/'/g, "\\'");
-        const safePhone = (s.phone || '').replace(/'/g, "\\'");
-        const safeWebsite = (s.website || '').replace(/'/g, "\\'");
-        // Store notes but replace newlines for safe passing
-        const safeNotes = (s.notes || '').replace(/'/g, "\\'").replace(/\n/g, "\\n");
-
-        // Logic: Is this an online shop? (Has website but no phone, or just has website)
-        let contactDisplay = '';
-        if (s.phone) {
-            contactDisplay = `<a href="tel:${s.phone}" class="text-sm font-semibold text-indigo-600 hover:underline truncate block">📞 ${s.phone}</a>`;
-        } else if (s.website) {
-            contactDisplay = `<a href="${s.website}" target="_blank" class="text-sm font-semibold text-emerald-600 hover:underline truncate block">🌐 Visit Shop</a>`;
-        } else {
-            contactDisplay = `<span class="text-sm font-semibold text-slate-400">-</span>`;
-        }
-
-        // Show notes if they exist
-        const notesSection = s.notes ?
-            `<div class="mt-3 text-xs text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100 italic">"${s.notes}"</div>`
-            : '';
 
         grid.innerHTML += `
-        <div class="bg-white/70 backdrop-blur-xl border border-white/60 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-200 group relative flex flex-col h-full">
-            
-            <div class="flex items-start justify-between mb-4">
+        <div class="bg-white border border-slate-100 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all group flex flex-col h-full">
+            <div class="flex items-start justify-between mb-3">
                 <div class="flex items-center gap-3">
-                    <div class="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center text-white text-lg font-bold shadow-sm flex-shrink-0">
+                    <div class="h-10 w-10 rounded-xl bg-brand-600 flex items-center justify-center text-white text-base font-bold shadow-sm shrink-0">
                         ${initial}
                     </div>
                     <div class="overflow-hidden">
-                        <h3 class="font-bold text-slate-800 text-base truncate" title="${s.name}">${s.name}</h3>
-                        <p class="text-xs text-slate-500 truncate">${s.contact || 'No contact person'}</p>
+                        <h3 class="font-bold text-brand-900 text-sm truncate" title="${s.name}">${s.name}</h3>
+                        <p class="text-[10px] text-slate-500 truncate">${s.contact || 'No contact'}</p>
                     </div>
                 </div>
                 <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onclick="openEditSupplier('${safeName}', '${safeContact}', '${safePhone}', ${s.lead_time_days}, '${safeWebsite}', '${safeNotes}')" 
-                        class="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition" title="Edit">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                    </button>
-                    <button onclick="deleteSupplier('${safeName}')" 
-                        class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition" title="Delete">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                    </button>
+                    <button onclick="openEditSupplier('${safeName}')" class="p-1.5 text-slate-400 hover:text-brand-600 rounded-lg transition"><i class="fas fa-edit text-xs"></i></button>
+                    <button onclick="deleteSupplier('${safeName}')" class="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg transition"><i class="fas fa-trash-alt text-xs"></i></button>
                 </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-3 mb-2">
-                <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-                    <span class="block text-[10px] text-slate-400 uppercase font-bold mb-0.5">Lead Time</span>
-                    <span class="text-sm font-semibold text-slate-700">${s.lead_time_days || '-'} Days</span>
-                </div>
-                <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-                    <span class="block text-[10px] text-slate-400 uppercase font-bold mb-0.5">${s.website ? 'Link / Contact' : 'Contact'}</span>
-                    ${contactDisplay}
-                </div>
+            <div class="bg-brand-50/50 p-2 rounded-xl border border-brand-50 mb-3">
+                <span class="block text-[8px] text-slate-400 uppercase font-bold mb-0.5">Lead Time</span>
+                <span class="text-xs font-semibold text-brand-700">${s.lead_time_days || '-'} Days</span>
             </div>
-
-            ${notesSection}
             
-            <div class="mt-auto pt-4">
-                <button onclick="openRestockFromSupplier('${safeName}')" class="w-full py-2 rounded-xl bg-white border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 hover:text-slate-800 transition">
-                    Create Purchase Order
+            <div class="mt-auto pt-2">
+                <button onclick="openRestockFromSupplier('${safeName}')" 
+                    class="w-full py-2 rounded-xl bg-white border border-slate-200 text-brand-600 text-[10px] font-bold hover:bg-brand-600 hover:text-white transition">
+                    Create Order
                 </button>
             </div>
         </div>`;
@@ -1229,14 +1553,14 @@ function handleSupplierOutsideClick(e) {
 
 // Quick Helper to start an order
 function openRestockFromSupplier(supplierName) {
-    showPage('dashboard');
     openRestockModal('', '', 0); // Open generic
     // Pre-select supplier logic would go here if we enhance restock modal further
     setTimeout(() => {
         const select = document.getElementById('restock_supplier');
+        const label = document.getElementById('restockSupplierLabel');
         if (select) select.value = supplierName;
-        document.getElementById('restockSupplierLabel').textContent = supplierName;
-    }, 500);
+        if (label) label.textContent = supplierName;
+    }, 100); // Reduced delay for faster UI response
 }
 
 async function fetchOrders() {
@@ -1246,48 +1570,215 @@ async function fetchOrders() {
     } catch (e) { }
 }
 
+
+// //////////////////////////////////////// //
+//      THEMED & ALIGNED ORDERS RENDERER     //
+// //////////////////////////////////////// //
+// [main.js] - Ensure this function handles the UI correctly
 function renderOrdersTable(orders) {
     const tbody = document.getElementById('ordersTableBody');
     if (!tbody) return;
     tbody.innerHTML = '';
-    if (!orders || orders.length === 0) { tbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-slate-400">No orders.</td></tr>`; return; }
+
+    if (!orders || orders.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-10 text-slate-400 text-xs">No active orders found.</td></tr>`;
+        return;
+    }
 
     orders.forEach(o => {
-        let badge = o.status === 'pending'
-            ? `<span class="px-2 py-1 rounded-md bg-amber-50 text-amber-600 text-xs font-bold border border-amber-100">Pending</span>`
-            : `<span class="px-2 py-1 rounded-md bg-emerald-50 text-emerald-600 text-xs font-bold border border-emerald-100">Received</span>`;
+        // Status Badge logic
+        const isPending = o.status === 'pending';
+        const badge = isPending
+            ? `<span class="px-2 py-0.5 rounded-md bg-amber-50 text-amber-600 text-[10px] font-bold border border-amber-100">Pending</span>`
+            : `<span class="px-2 py-0.5 rounded-md bg-emerald-50 text-brand-600 text-[10px] font-bold border border-brand-100">Received</span>`;
+
+        const dateStr = o.created_at ? new Date(o.created_at).toLocaleDateString() : '-';
+        const isNewItemReq = o.notes && o.notes.includes("[NEW ITEM REQUEST]");
+        const itemDisplay = isNewItemReq
+            ? `<div class="font-bold text-slate-800 text-sm">${o.item} <span class="bg-brand-600 text-white text-[9px] px-1.5 py-0.5 rounded ml-1 uppercase tracking-wider font-bold shadow-sm">New Item</span></div>`
+            : `<div class="font-bold text-slate-700 text-sm leading-tight">${o.item}</div>`;
+        // Action Button: Only Admins can usually "Receive". Staff just see status.
+        // We can simply show the status for now.
+        let actionBtn = '';
+        if (isPending) {
+            // If Admin/Owner, show Receive. If Staff, show "Waiting"
+            if (currentUser.role === 'staff') {
+                actionBtn = `<span class="text-slate-400 text-[10px] italic">Awaiting Approval</span>`;
+            } else {
+                actionBtn = `<button onclick="showToast('Feature coming soon')" 
+                         class="bg-brand-600 hover:bg-brand-900 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold transition shadow-sm">Receive</button>`;
+            }
+        } else {
+            actionBtn = `<span class="text-emerald-600 font-bold text-[10px] flex items-center justify-center gap-1"><i class="fas fa-check-circle"></i> Complete</span>`;
+        }
 
         tbody.innerHTML += `
-        <tr class="hover:bg-slate-50/50 transition">
-            <td class="px-6 py-4 font-mono text-xs text-slate-500">#PO-${(o._id || o.id || '???').slice(-4)}</td>
-            <td class="px-6 py-4"><div class="font-bold text-slate-700">${o.item}</div><div class="text-xs text-slate-400">Qty: ${o.quantity}</div></td>
-            <td class="px-6 py-4 text-xs text-slate-600">${o.branch}</td>
-            <td class="px-6 py-4">${badge}</td>
-            <td class="px-6 py-4 text-xs text-slate-500">${new Date(o.created_at).toLocaleDateString()}</td>
-            <td class="px-6 py-4 text-center">
-                ${o.status === 'pending' ? `<button onclick="showToast('Order received logic needed')" class="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg">Receive</button>` : `<span class="text-xs text-emerald-600 font-medium">✓ Done</span>`}
+        <tr class="hover:bg-brand-50/20 transition border-b border-slate-50 last:border-0">
+            <td class="px-6 py-4 font-mono text-[10px] text-slate-400">#PO-${(o._id || o.id || '???').slice(-4)}</td>
+            <td class="px-6 py-4">
+                <div class="font-bold text-slate-700 text-sm leading-tight">${o.item}</div>
+                <div class="text-[10px] text-slate-400">Qty: ${o.quantity}</div>
             </td>
+            <td class="px-6 py-4 text-xs text-slate-500 font-medium">${o.branch}</td>
+            <td class="px-6 py-4 text-center">${badge}</td>
+            <td class="px-6 py-4 text-xs text-slate-500 font-medium">${dateStr}</td>
+            <td class="px-6 py-4 text-center">${actionBtn}</td>
         </tr>`;
     });
 }
-
 // ==========================================
-// 9. BRANCHES & EDIT STOCK & AI (Keeping your existing logic)
+// 9. BRANCHES MANAGEMENT (FIXED)
 // ==========================================
 
-async function fetchBranches(onLoaded) {
-    try {
-        const res = await fetch(BRANCHES_API_URL);
-        const branches = await res.json();
-        const tbody = document.getElementById('branchesTableBody');
-        if (tbody) {
-            tbody.innerHTML = '';
-            branches.forEach(b => {
-                tbody.innerHTML += `<tr><td class="px-4 py-2">${b.name}</td><td class="px-4 py-2">${b.address}</td><td class="px-4 py-2">${b.manager}</td></tr>`;
-            });
-        }
-        if (typeof onLoaded === 'function') onLoaded(branches);
-    } catch (err) { console.error(err); }
+function fetchBranches(callback = null) { // ➤ Added 'callback' parameter
+    const grid = document.getElementById('branchesGrid');
+    const search = document.getElementById('branchSearch')?.value.toLowerCase() || '';
+
+    // Simple Loading State for the management grid
+    if (grid) grid.innerHTML = '<div class="col-span-full text-center py-10"><i class="fas fa-circle-notch fa-spin text-brand-600 text-2xl"></i></div>';
+
+    fetch(BRANCHES_API_URL)
+        .then(res => res.json())
+        .then(data => {
+            // 1. Run the management grid logic
+            if (grid) {
+                grid.innerHTML = '';
+                const filtered = data.filter(b =>
+                    b.name.toLowerCase().includes(search) ||
+                    (b.manager && b.manager.toLowerCase().includes(search))
+                );
+
+                if (filtered.length === 0) {
+                    grid.innerHTML = `<div class="col-span-full text-center text-slate-400 py-10">No branches found.</div>`;
+                } else {
+                    filtered.forEach(branch => {
+                        const branchId = branch.id || branch._id || '';
+                        const card = document.createElement('div');
+                        card.className = "bg-white border border-slate-200 rounded-3xl p-6 shadow-md hover:shadow-lg transition-all duration-300 group relative flex flex-col";
+
+                        const safeName = branch.name.replace(/'/g, "\\'");
+                        const safeAddr = (branch.address || 'No Address').replace(/'/g, "\\'");
+                        const safeMgr = (branch.manager || 'Unassigned').replace(/'/g, "\\'");
+                        const safePhone = (branch.phone || 'No Contact').replace(/'/g, "\\'");
+
+                        card.innerHTML = `
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="h-12 w-12 rounded-2xl bg-brand-50 text-brand-600 flex items-center justify-center text-xl shadow-sm">🏢</div>
+                            </div>
+                            <h3 class="text-xl font-extrabold text-brand-900 mb-1">${branch.name}</h3>
+                            <div class="mt-auto grid grid-cols-2 gap-3">
+                                <button onclick="filterInventoryByBranch('${safeName}')" class="col-span-2 py-2.5 rounded-xl bg-brand-600 text-white text-xs font-bold hover:bg-brand-700 shadow-md transition flex items-center justify-center gap-2">View Stock</button>
+                                <button onclick="openBranchModal('${branchId}', '${safeName}', '${safeAddr}', '${safeMgr}', '${safePhone}')" class="py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 transition">Edit</button>
+                                <button onclick="deleteBranch('${branchId}')" class="py-2 rounded-xl border border-rose-100 text-rose-500 text-xs font-bold hover:bg-rose-50 transition">Delete</button>
+                            </div>`;
+                        grid.appendChild(card);
+                    });
+                }
+            }
+
+            // ➤ 2. CRITICAL FIX: Run the callback if provided (this fills the dropdowns)
+            if (typeof callback === 'function') {
+                callback(data);
+            }
+        })
+        .catch(err => console.error(err));
+}
+
+// --- BRANCH ACTIONS ---
+
+// 1. Open Modal (Handles both Add & Edit)
+function openBranchModal(id = null, name = '', address = '', manager = '', phone = '') {
+    const modal = document.getElementById('branchOverlay');
+    const title = document.getElementById('branchModalTitle');
+
+    // Set Fields
+    document.getElementById('branch_id').value = id || '';
+    document.getElementById('new_branch_name').value = name;
+    document.getElementById('new_branch_address').value = address;
+    document.getElementById('new_branch_manager').value = manager;
+    document.getElementById('new_branch_phone').value = phone;
+
+    // Update Title
+    title.textContent = id ? "Edit Branch" : "Add Branch";
+
+    modal.classList.remove('hidden');
+}
+
+function closeBranchModal() {
+    document.getElementById('branchOverlay').classList.add('hidden');
+}
+
+function handleBranchOutsideClick(e) {
+    if (e.target.id === 'branchOverlay') closeBranchModal();
+}
+
+function submitBranchForm(e) {
+    e.preventDefault();
+
+    // ➤ FIX: Ensure we don't accidentally get the string "undefined"
+    let id = document.getElementById('branch_id').value;
+    if (id === 'undefined' || id === 'null') id = '';
+
+    const name = document.getElementById('new_branch_name').value;
+    const address = document.getElementById('new_branch_address').value;
+    const manager = document.getElementById('new_branch_manager').value;
+    const phone = document.getElementById('new_branch_phone').value;
+
+    // Determine Logic (Create vs Update)
+    const method = id ? 'PUT' : 'POST';
+    const url = id ? `${BRANCHES_API_URL}/${id}` : BRANCHES_API_URL;
+
+    fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, address, manager, phone })
+    })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) {
+                alert(data.error);
+            } else {
+                showToast(id ? 'Branch updated!' : 'Branch created!');
+                closeBranchModal();
+                fetchBranches();
+                // Also refresh dropdowns if needed
+                if (typeof fetchBranchDropdown === 'function') fetchBranchDropdown();
+            }
+        })
+        .catch(err => console.error(err));
+}
+
+// 3. Delete Branch
+function deleteBranch(id) {
+    if (!confirm("Are you sure? This will delete the branch and all associated stock data.")) return;
+
+    fetch(`${BRANCHES_API_URL}/${id}`, { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) alert(data.error);
+            else {
+                showToast('Branch deleted');
+                fetchBranches();
+            }
+        });
+}
+
+// 4. View Stock Integration (Smart Redirect)
+function filterInventoryByBranch(branchName) {
+    // 1. Switch to Inventory Page
+    showPage('inventory');
+
+    // 2. Set the dropdown value
+    const dropdown = document.getElementById('branchFilter');
+    const label = document.getElementById('branchLabel');
+
+    if (dropdown) {
+        dropdown.value = branchName;
+        label.textContent = branchName;
+    }
+
+    // 3. Trigger fetch
+    fetchInventory();
 }
 
 async function saveBranch() {
@@ -1316,16 +1807,14 @@ function closeEditStockModal() { document.getElementById('editStockOverlay').cla
 async function submitEditStock() {
     const qty = Number(document.getElementById('edit_quantity').value);
     const action = document.getElementById('edit_action').value;
+    const reasonCat = document.getElementById('edit_reason_cat').value;
+    const note = document.getElementById('edit_note').value;
 
     // Calculate delta
     let delta = 0;
     if (action === 'out') delta = -qty;
     else if (action === 'in') delta = qty;
     else if (action === 'set') delta = qty - editContext.current;
-
-    // NEW: Get Reason
-    const reasonCat = document.getElementById('edit_reason_cat').value;
-    const note = document.getElementById('edit_note').value;
 
     try {
         await fetch(`${API_URL}/${encodeURIComponent(editContext.name)}/adjust`, {
@@ -1393,20 +1882,27 @@ function openItemDetails(item) {
             : '-';
     }
 
-    // 3. Batch Specifics
-    setText('detail_batch', item.batch_number);
-    setText('detail_lot', item.lot_number);
-    setText('detail_supplier_batch', item.supplier_batch);
-    setText('detail_qr', item.qr_code_id);
+    // 3. Batch Specifics (With Fallbacks)
+    setText('detail_batch', item.batch_number || item.batch || 'N/A');
+    setText('detail_lot', item.lot_number || 'N/A');
+    setText('detail_supplier_batch', item.supplier_batch || 'N/A');
 
     // 4. Dates (Format nicely)
     const formatDate = (dateStr) => {
         if (!dateStr) return '-';
+        // Handle Python string dates (YYYY-MM-DD) vs ISO
         const d = new Date(dateStr);
         return isNaN(d.getTime()) ? dateStr : d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
     };
     setText('detail_mfg', formatDate(item.mfg_date));
-    setText('detail_exp', formatDate(item.exp_date));
+    setText('detail_exp', formatDate(item.exp_date || item.expiry_date));
+
+    // QR Code Field
+    const qrEl = document.getElementById('detail_qr');
+    if (qrEl) qrEl.textContent = item.qr_code_id || item.id || '-';
+
+    const qrId = item.qr_code_id || item.batch_number || item.id;
+    generateDetailQR(qrId);
 
     // Show Modal
     modal.classList.remove('hidden');
@@ -1437,15 +1933,146 @@ function hideSplashScreen() {
     }
 }
 
+// //////////////////////////////////////// //
+//      ✨ REQUEST NEW ITEM LOGIC            //
+// //////////////////////////////////////// //
+
+function openNewItemModal() {
+    const modal = document.getElementById('newItemOverlay');
+    if (modal) {
+        modal.classList.remove('hidden');
+
+        // Reset Inputs
+        document.getElementById('req_new_name').value = '';
+        document.getElementById('req_new_qty').value = '1';
+        document.getElementById('req_new_link').value = '';
+        document.getElementById('req_new_notes').value = '';
+
+        // ➤ RESET PRIORITY DROPDOWN
+        selectPriority('normal', 'Normal');
+    }
+}
+
+function closeNewItemModal() {
+    const modal = document.getElementById('newItemOverlay');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function submitNewItemRequest(e) {
+    e.preventDefault();
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-circle-notch fa-spin"></i> Sending...`;
+    btn.disabled = true;
+
+    try {
+        const name = document.getElementById('req_new_name').value;
+        const qty = document.getElementById('req_new_qty').value;
+        const priority = document.getElementById('req_new_priority').value;
+        const link = document.getElementById('req_new_link').value;
+        const notes = document.getElementById('req_new_notes').value;
+
+        // Tag the notes so Admin knows it's a new item request
+        const finalNotes = `[NEW ITEM REQUEST] ${notes} ${link ? `(Link: ${link})` : ''}`;
+
+        const payload = {
+            item: name,
+            branch: currentUser.branch, // Auto-lock to their branch
+            quantity: parseInt(qty),
+            supplier: "To Be Determined", // Placeholder since item doesn't exist
+            priority: priority,
+            notes: finalNotes,
+            status: 'pending',
+            created_at: new Date().toISOString()
+        };
+
+        const res = await fetch(ORDERS_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error("Failed to submit request");
+
+        showToast("Request submitted successfully!");
+        closeNewItemModal();
+
+        // Refresh orders list immediately
+        if (!document.getElementById('orders-section').classList.contains('hidden')) {
+            fetchOrders();
+        }
+
+    } catch (err) {
+        console.error(err);
+        alert("Error sending request: " + err.message);
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+
+// //////////////////////////////////////// //
+//      ✨ PRIORITY DROPDOWN LOGIC           //
+// //////////////////////////////////////// //
+
+// 1. Toggle Menu Visibility
+function togglePriorityMenu() {
+    const menu = document.getElementById('priorityDropdownOptions');
+    const btn = document.getElementById('priorityDropdownBtn');
+
+    if (menu.classList.contains('hidden')) {
+        // Open
+        menu.classList.remove('hidden');
+        btn.classList.add('border-brand-600', 'ring-2', 'ring-brand-100'); // Focus state
+    } else {
+        // Close
+        menu.classList.add('hidden');
+        btn.classList.remove('border-brand-600', 'ring-2', 'ring-brand-100');
+    }
+}
+
+// 2. Select an Option
+function selectPriority(value, label) {
+    // Update Hidden Input
+    document.getElementById('req_new_priority').value = value;
+
+    // Update Button Text
+    const labelEl = document.getElementById('priorityLabel');
+
+    if (value === 'high') {
+        // Style for High Priority (Rose/Red theme)
+        labelEl.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> ${label}`;
+        labelEl.className = "flex items-center gap-2 text-rose-600";
+    } else {
+        // Style for Normal (Emerald/Slate theme)
+        labelEl.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span> ${label}`;
+        labelEl.className = "flex items-center gap-2 text-brand-900";
+    }
+
+    // Close Menu
+    togglePriorityMenu();
+}
+
+// 3. Close menu if clicked outside
+document.addEventListener('click', function (e) {
+    const btn = document.getElementById('priorityDropdownBtn');
+    const menu = document.getElementById('priorityDropdownOptions');
+
+    if (btn && menu && !btn.contains(e.target) && !menu.contains(e.target)) {
+        menu.classList.add('hidden');
+        btn.classList.remove('border-brand-600', 'ring-2', 'ring-brand-100');
+    }
+});
+
 
 // ==========================================
-// 10. ANALYTICS PAGE LOGIC (Restored)
+// 10. ANALYTICS PAGE LOGIC (Updated)
 // ==========================================
 
-// Initializer for the Analytics Page
-function initAnalyticsOverview() {
-    // 1. Fetch small KPIs at the top
-    fetch(`${API_BASE}/analytics/overview`)
+function fetchAnalyticsOverview(branchName = 'All') {
+    // It passes the branchName to the Python backend
+    fetch(`${API_BASE}/analytics/overview?branch=${encodeURIComponent(branchName)}`)
         .then(res => res.json())
         .then(d => {
             if (document.getElementById("an-new-items")) document.getElementById("an-new-items").textContent = d.new_items;
@@ -1454,20 +2081,128 @@ function initAnalyticsOverview() {
             if (document.getElementById("an-branches")) document.getElementById("an-branches").textContent = d.branches;
         })
         .catch(err => console.error("Analytics overview error", err));
-
-    // 2. Fetch Lists (Low Stock & Top Products)
-    fetchAnalyticsLists();
 }
 
+function initAnalyticsOverview() {
+    // Default to 'All' for Owner/Admin
+    let targetBranch = 'All';
+    const tabContainer = document.getElementById('analyticsBranchTabs');
+
+    // 🔒 FRONTEND LOCK: Check if the logged-in user is Staff
+    if (currentUser && currentUser.role === 'staff') {
+        // Force the target branch to their assigned branch
+        targetBranch = currentUser.branch;
+
+        // Update the global state variable (if used by other chart functions)
+        currentAnalyticsBranch = currentUser.branch;
+
+        // Hide the branch tabs so they cannot switch to others
+        if (tabContainer) tabContainer.classList.add('hidden');
+    } else {
+        // --- ADMIN & OWNER LOGIC ---
+        // They are allowed to see tabs and switch branches
+        if (tabContainer) tabContainer.classList.remove('hidden');
+
+        // Reset global state to 'All' so they see the big picture first
+        currentAnalyticsBranch = 'All';
+    }
+
+    // 1. Fetch KPI Data (Overview) - Passes the locked branch or 'All'
+    fetchAnalyticsOverview(targetBranch);
+
+    // 2. Fetch Lists (Top Products, Low Stock tables)
+    fetchAnalyticsLists();
+
+    // 3. Render Branch Tabs (Only run this if they are NOT staff)
+    if (!currentUser || currentUser.role !== 'staff') {
+        renderAnalyticsTabs();
+    }
+
+    // 4. Fetch Charts (Passes the locked branch or 'All')
+    fetchAnalyticsCharts(targetBranch);
+}
+
+// NEW: Automates the Branch Tabs
+async function renderAnalyticsTabs() {
+    const container = document.getElementById('analyticsBranchTabs');
+    if (!container) return;
+
+    try {
+        const res = await fetch(BRANCHES_API_URL);
+        const branches = await res.json();
+
+        // Start with "All Branches"
+        let html = `
+            <button onclick="switchAnalyticsBranch('All')" 
+                class="analytics-tab px-4 py-2 rounded-full text-xs font-bold transition-all border whitespace-nowrap ${currentAnalyticsBranch === 'All' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}">
+                All Branches
+            </button>`;
+
+        // Loop through branches from DB
+        branches.forEach(b => {
+            const isActive = currentAnalyticsBranch === b.name;
+            html += `
+            <button onclick="switchAnalyticsBranch('${b.name}')" 
+                class="analytics-tab px-4 py-2 rounded-full text-xs font-bold transition-all border whitespace-nowrap ${isActive ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}">
+                ${b.name}
+            </button>`;
+        });
+
+        container.innerHTML = html;
+
+    } catch (e) {
+        container.innerHTML = `<span class="text-xs text-rose-400">Failed to load branches</span>`;
+    }
+}
+
+// Handle Tab Switching
+function switchAnalyticsBranch(branchName) {
+    currentAnalyticsBranch = branchName;
+
+    // Update UI (Highlight active tab)
+    renderAnalyticsTabs();
+
+    // Update Charts
+    fetchAnalyticsCharts(branchName);
+}
+
+// Updated Chart Fetcher to accept Branch Name
+async function fetchAnalyticsCharts(branchName = 'All') {
+    try {
+        console.log(`Fetching charts for: ${branchName}`);
+
+        // Pass branch parameter to API
+        const [weeklyRes, monthlyRes] = await Promise.all([
+            fetch(`${API_BASE}/analytics/movement?branch=${encodeURIComponent(branchName)}`),
+            fetch(`${API_BASE}/analytics/movement-monthly?branch=${encodeURIComponent(branchName)}`)
+        ]);
+
+        const weeklyData = await weeklyRes.json();
+        const monthlyData = await monthlyRes.json();
+
+        const payload = {
+            movement: weeklyData,
+            movement_monthly: monthlyData
+        };
+
+        lastAnalyticsPayload = payload;
+        drawAnalytics(payload);
+
+    } catch (err) {
+        console.error("Failed to load charts:", err);
+    }
+}
+
+// 2. Fetch Lists (Low Stock & Top Products)
 function fetchAnalyticsLists() {
-    // 1. Low Stock Table
+    // Low Stock Table
     fetch(`${API_BASE}/analytics/low-stock`)
         .then(res => res.json())
         .then(data => {
             const table = document.getElementById('lowStockTable');
             if (table) {
                 table.innerHTML = "";
-                if (data.length === 0) {
+                if (!data || data.length === 0) {
                     table.innerHTML = `<tr><td colspan="3" class="px-6 py-8 text-center text-slate-400 text-xs">All stock levels healthy.</td></tr>`;
                 } else {
                     data.forEach(p => {
@@ -1476,9 +2211,7 @@ function fetchAnalyticsLists() {
                             <td class="px-6 py-3 font-medium text-slate-700">${p.name}</td>
                             <td class="px-6 py-3 font-bold text-slate-800 text-right">${p.quantity}</td>
                             <td class="px-6 py-3 text-right">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800">
-                                    Low
-                                </span>
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800">Low</span>
                             </td>
                         </tr>`;
                     });
@@ -1486,110 +2219,154 @@ function fetchAnalyticsLists() {
             }
         });
 
-    // 2. Top Products List
+    // Top Products List
     fetch(`${API_BASE}/analytics/top-products`)
-        .then(res => res.json())
+        .then(res => {
+            if (!res.ok) throw new Error("Server Error");
+            return res.json();
+        })
         .then(data => {
             const list = document.getElementById('topProductsList');
             if (list) {
                 list.innerHTML = "";
-                if (data.length === 0) {
+                if (!data || data.length === 0) {
                     list.innerHTML = `<li class="text-center text-slate-400 text-xs py-4">No consumption data yet.</li>`;
                 } else {
                     data.forEach((p, index) => {
-                        // Add medal emoji for top 3
-                        let rank = `<span class="text-slate-400 text-[10px] font-bold">#${index + 1}</span>`;
-                        if (index === 0) rank = '🥇';
-                        if (index === 1) rank = '🥈';
-                        if (index === 2) rank = '🥉';
+                        let rankClass = "bg-slate-100 text-slate-500";
+                        let rankIcon = `#${index + 1}`;
+                        if (index === 0) { rankClass = "bg-amber-100 text-amber-600"; rankIcon = "🥇"; }
+                        if (index === 1) { rankClass = "bg-slate-200 text-slate-600"; rankIcon = "🥈"; }
+                        if (index === 2) { rankClass = "bg-orange-100 text-orange-600"; rankIcon = "🥉"; }
+
+                        // Safe Cost Calculation
+                        const costVal = parseFloat(p.total_cost || 0);
+                        const formattedCost = costVal.toLocaleString('en-PH', {
+                            style: 'currency', currency: 'PHP', minimumFractionDigits: 2
+                        });
 
                         list.innerHTML += `
-                        <li class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100 hover:bg-white hover:shadow-sm transition">
+                        <li class="flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-100 group">
                             <div class="flex items-center gap-3">
-                                <div class="w-6 text-center">${rank}</div>
-                                <span class="text-sm font-semibold text-slate-700 truncate max-w-[120px]" title="${p._id}">${p._id}</span>
+                                <div class="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold ${rankClass}">
+                                    ${rankIcon}
+                                </div>
+                                <div>
+                                    <div class="text-sm font-bold text-slate-700 truncate max-w-[140px]" title="${p._id}">${p._id}</div>
+                                    <div class="h-1.5 w-24 bg-slate-100 rounded-full mt-1 overflow-hidden">
+                                        <div class="h-full bg-indigo-500 rounded-full" style="width: ${Math.min(100, p.used * 2)}%"></div>
+                                    </div>
+                                </div>
                             </div>
-                            <span class="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">${p.used} used</span>
+                            <div class="text-right">
+                                <span class="block text-xs font-bold text-indigo-600">${p.used} used</span>
+                                <span class="block text-[10px] font-medium text-slate-400 mt-0.5">${formattedCost}</span>
+                            </div>
                         </li>`;
                     });
                 }
             }
+        })
+        .catch(err => {
+            console.error("Top Products Error:", err);
+            const list = document.getElementById('topProductsList');
+            if (list) list.innerHTML = `<li class="text-center text-rose-400 text-xs py-4">Error loading data.</li>`;
         });
 }
 
-// Socket Connection for Real-time Analytics
-function initAnalyticsSocket() {
-    if (analyticsSocket && analyticsSocket.connected) return;
+async function fetchAnalyticsCharts(branchName = 'All') { // Accept parameter
+    try {
+        console.log(`Fetching chart data for: ${branchName}...`);
 
-    // Connect to the analytics namespace
-    analyticsSocket = io(`${API_BASE}/analytics`, {
-        transports: ["websocket"],
-    });
+        // Pass the branch to the API
+        const [weeklyRes, monthlyRes] = await Promise.all([
+            fetch(`${API_BASE}/analytics/movement?branch=${encodeURIComponent(branchName)}`),
+            fetch(`${API_BASE}/analytics/movement-monthly?branch=${encodeURIComponent(branchName)}`)
+        ]);
 
-    analyticsSocket.on("connect", () => {
-        console.log("Analytics Socket connected");
-    });
+        const weeklyData = await weeklyRes.json();
+        const monthlyData = await monthlyRes.json();
 
-    analyticsSocket.on("analytics_update", (payload) => {
-        console.log("Received Analytics Update");
-        lastAnalyticsPayload = payload; // Cache it
+        const payload = {
+            movement: weeklyData,
+            movement_monthly: monthlyData
+        };
 
-        // Only draw if we are currently looking at the analytics section
-        const section = document.getElementById('analytics-section');
-        if (section && !section.classList.contains('hidden')) {
-            drawAnalytics(payload);
-        }
-    });
+        lastAnalyticsPayload = payload;
+        drawAnalytics(payload);
+
+    } catch (err) {
+        console.error("Failed to load charts:", err);
+    }
 }
 
-// Main Chart Renderer (Big Line Chart + Bar Chart)
+// //////////////////////////////////////// //
+//      ✨ UPDATED: GRADIENT ANALYTICS RENDERER //
+// //////////////////////////////////////// //
 function drawAnalytics(payload) {
     const section = document.getElementById('analytics-section');
-    if (!section || section.classList.contains('hidden')) return;
+    if (!section || section.classList.contains('hidden')) {
+        lastAnalyticsPayload = payload;
+        return;
+    }
 
     const lineCanvas = document.getElementById('analytics-main-chart');
     const barCanvas = document.getElementById('stockInOutChart');
 
-    // Safety check
     if (!lineCanvas || !barCanvas) return;
 
-    const weekly = payload.movement || {};
+    const weekly = payload.movement || { labels: [], stock_in: [], stock_out: [] };
     const monthly = payload.movement_monthly || weekly;
 
-    // Prepare Data
-    const lineLabels = monthly.labels || [];
-    const lineStockIn = monthly.stock_in || [];
-    const lineStockOut = monthly.stock_out || [];
-
-    const barLabels = weekly.labels || [];
-    const barStockIn = weekly.stock_in || [];
-    const barStockOut = weekly.stock_out || [];
-
-    // 1. Draw Big Line Chart (Monthly Trends)
+    // A. Big Chart (Line)
     const lineCtx = lineCanvas.getContext('2d');
-    if (analyticsMainChart) analyticsMainChart.destroy();
+    if (analyticsMainChart) { analyticsMainChart.destroy(); analyticsMainChart = null; }
 
     analyticsMainChart = new Chart(lineCtx, {
         type: 'line',
         data: {
-            labels: lineLabels,
+            labels: monthly.labels || [],
             datasets: [
                 {
                     label: 'Stock In',
-                    data: lineStockIn,
-                    borderColor: '#22c55e', // Green
-                    backgroundColor: 'rgba(34,197,94,0.1)',
-                    tension: 0.4,
+                    data: monthly.stock_in || [],
+                    borderColor: '#5E4074', // Plume Wine
+                    borderWidth: 3,
+                    pointBackgroundColor: '#fff',
+                    pointBorderColor: '#5E4074',
+                    pointHoverRadius: 6,
                     fill: true,
-                    pointRadius: 4
+                    // ➤ ADDED: Dynamic Gradient Logic
+                    backgroundColor: function (context) {
+                        const chart = context.chart;
+                        const { ctx, chartArea } = chart;
+                        if (!chartArea) return null;
+                        const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
+                        gradient.addColorStop(0, 'rgba(94, 64, 116, 0.05)');  // Light Wine
+                        gradient.addColorStop(0.5, 'rgba(94, 64, 116, 0.4)'); // Mid Wine
+                        gradient.addColorStop(1, 'rgba(94, 64, 116, 0.8)');   // Deep Plume Wine
+                        return gradient;
+                    },
+                    tension: 0.4
                 },
                 {
                     label: 'Stock Out',
-                    data: lineStockOut,
-                    borderColor: '#ef4444', // Red
-                    backgroundColor: 'rgba(239,68,68,0.1)',
+                    data: monthly.stock_out || [],
+                    borderColor: '#f43f5e', // Rose Red
+                    borderWidth: 3,
+                    backgroundColor: function (context) {
+                        const chart = context.chart;
+                        const { ctx, chartArea } = chart;
+                        if (!chartArea) return null;
+                        const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
+                        gradient.addColorStop(0, 'rgba(244, 63, 94, 0.05)');
+                        gradient.addColorStop(1, 'rgba(244, 63, 94, 0.6)');
+                        return gradient;
+                    },
                     tension: 0.4,
                     fill: true,
+                    pointBackgroundColor: '#fff',
+                    pointBorderColor: '#f43f5e',
                     pointRadius: 4
                 }
             ]
@@ -1599,60 +2376,80 @@ function drawAnalytics(payload) {
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { position: 'top' },
-                title: {
-                    display: true,
-                    text: 'Monthly Stock Trends (In vs Out)',
-                    font: { size: 16, weight: 'bold' },
-                    padding: { bottom: 20 },
-                    color: '#1e293b'
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(37, 23, 48, 0.9)', // Deep Wine Tooltip
+                    padding: 12,
+                    cornerRadius: 12,
+                    titleFont: { size: 13, weight: 'bold' },
+                    bodyFont: { size: 12 }
                 }
             },
-            scales: { y: { beginAtZero: true, grid: { borderDash: [5, 5] } }, x: { grid: { display: false } } }
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(0,0,0,0.03)', borderDash: [5, 5] },
+                    ticks: { color: '#94a3b8', font: { size: 10 } }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: { color: '#94a3b8', font: { size: 10 } }
+                }
+            }
         }
     });
 
-    // 2. Draw Weekly Bar Chart
+    // B. Small Chart (Weekly Bar)
     const barCtx = barCanvas.getContext('2d');
-    if (stockInOutChart) stockInOutChart.destroy();
+    if (stockInOutChart) { stockInOutChart.destroy(); stockInOutChart = null; }
 
     stockInOutChart = new Chart(barCtx, {
         type: 'bar',
         data: {
-            labels: barLabels,
+            labels: weekly.labels || [],
             datasets: [
                 {
                     label: 'In',
-                    data: barStockIn,
-                    backgroundColor: '#22c55e',
-                    borderRadius: 4
+                    data: weekly.stock_in || [],
+                    backgroundColor: '#5E4074', // Changed from emerald to Plume Wine
+                    borderRadius: 6,
+                    barPercentage: 0.6
                 },
                 {
                     label: 'Out',
-                    data: barStockOut,
-                    backgroundColor: '#ef4444',
-                    borderRadius: 4
+                    data: weekly.stock_out || [],
+                    backgroundColor: '#f43f5e',
+                    borderRadius: 6,
+                    barPercentage: 0.6
                 }
             ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                title: {
-                    display: true,
-                    text: 'Weekly Activity (Last 7 Days)',
-                    font: { size: 14, weight: 'bold' },
-                    color: '#475569'
-                }
-            },
-            scales: { y: { beginAtZero: true }, x: { grid: { display: false } } }
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { display: false, beginAtZero: true },
+                x: { grid: { display: false }, ticks: { font: { size: 9 }, color: '#94a3b8' } }
+            }
         }
     });
-
 }
 
+// 5. Interactive Buttons for Chart
+function toggleMainChartDataset(datasetIndex) {
+    if (!analyticsMainChart) return;
+    const isVisible = analyticsMainChart.isDatasetVisible(datasetIndex);
+    if (isVisible) {
+        analyticsMainChart.hide(datasetIndex);
+        const btn = document.getElementById(`legend-btn-${datasetIndex}`);
+        if (btn) btn.classList.add('opacity-50', 'grayscale');
+    } else {
+        analyticsMainChart.show(datasetIndex);
+        const btn = document.getElementById(`legend-btn-${datasetIndex}`);
+        if (btn) btn.classList.remove('opacity-50', 'grayscale');
+    }
+}
 
 // ==========================================
 // 11. AUTHENTICATION & LOGOUT
@@ -1697,8 +2494,8 @@ function startQrScanner() {
         onScanSuccess,
         onScanFailure
     ).then(() => {
-        // UI Updates: Enable Stop & Switch, Disable Start
         updateScannerUI(true);
+        // Toast already uses brand-900 (Wine)
         showToast(`Camera started (${currentFacingMode === 'environment' ? 'Back' : 'Front'})`);
     }).catch(err => {
         console.error("Camera error", err);
@@ -1859,13 +2656,20 @@ async function qrQuickAction(action) {
 // ==========================================
 // 13. MOBILE MENU LOGIC
 // ==========================================
-
 function toggleMobileMenu() {
     const menu = document.getElementById('mobileMenu');
-    if (menu) {
-        menu.classList.toggle('hidden');
+    if (!menu) return;
+
+    if (menu.classList.contains('hidden')) {
+        menu.classList.remove('hidden');
+        document.body.style.overflow = 'hidden'; // Stop scrolling background
+    } else {
+        menu.classList.add('hidden');
+        document.body.style.overflow = ''; // Restore scrolling
     }
 }
+
+
 
 // ==========================================
 // SHARED DELETE MODAL LOGIC
@@ -1983,7 +2787,7 @@ function fetchComplianceData() {
                 const isOut = log.direction === 'out';
                 const badgeClass = isOut
                     ? "bg-rose-50 text-rose-600 border-rose-100"
-                    : "bg-emerald-50 text-emerald-600 border-emerald-100";
+                    : "bg-[#7D8C7D]/20 text-brand-600 border-emerald-100";
 
                 const actionLabel = isOut ? "Stock Used / Adjusted" : "Stock Added / Restocked";
                 const dateStr = new Date(log.date).toLocaleString();
@@ -1998,7 +2802,7 @@ function fetchComplianceData() {
                     </td>
                     <td class="px-6 py-4 font-medium text-slate-700">${log.name}</td>
                     <td class="px-6 py-4 text-xs text-slate-500">${log.branch || 'Main'}</td>
-                    <td class="px-6 py-4 text-right font-bold ${isOut ? 'text-rose-600' : 'text-emerald-600'}">
+                    <td class="px-6 py-4 text-right font-bold ${isOut ? 'text-rose-600' : 'text-brand-600'}">
                         ${isOut ? '-' : '+'}${log.quantity_used}
                     </td>
                 </tr>`;
@@ -2051,34 +2855,32 @@ function renderAuditTable(logs) {
         return;
     }
 
+    // //////////////////////////////////////// //
+    //      🛡️ COMPLIANCE TABLE MOBILE FIX        //
+    // //////////////////////////////////////// //
     logs.forEach(log => {
         const isOut = log.direction === 'out';
-        const badgeClass = isOut
-            ? "bg-rose-50 text-rose-600 border border-rose-100"
-            : "bg-emerald-50 text-emerald-600 border border-emerald-100";
-
-        const dateStr = new Date(log.date).toLocaleDateString() + ' ' + new Date(log.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-        // NEW: Use the reason category or fallback
-        const reason = log.reason_category || (isOut ? "Usage" : "Restock");
+        const dateObj = new Date(log.date);
+        const dateStr = dateObj.toLocaleDateString();
+        const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
         tbody.innerHTML += `
-        <tr class="hover:bg-slate-50/80 transition">
-            <td class="px-6 py-3 font-mono text-xs text-slate-500">${dateStr}</td>
-            <td class="px-6 py-3">
-                <div class="flex flex-col">
-                    <span class="inline-flex w-fit items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide ${badgeClass}">
-                        ${log.direction.toUpperCase()}
-                    </span>
-                    <span class="text-[10px] text-slate-400 mt-1 font-medium">${reason}</span>
-                </div>
-            </td>
-            <td class="px-6 py-3 font-bold text-slate-700">${log.name}</td>
-            <td class="px-6 py-3 text-xs text-slate-500">${log.branch || 'Main'}</td>
-            <td class="px-6 py-3 text-right font-mono font-bold ${isOut ? 'text-rose-600' : 'text-emerald-600'}">
-                ${isOut ? '-' : '+'}${log.quantity_used}
-            </td>
-        </tr>`;
+    <tr class="hover:bg-slate-50/80 transition">
+        <td class="px-3 md:px-6 py-3">
+            <div class="font-mono text-[10px] md:text-xs text-slate-500">${dateStr}</div>
+            <div class="font-mono text-[9px] text-slate-400 md:hidden">${timeStr}</div>
+        </td>
+        <td class="px-3 md:px-6 py-3">
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[8px] md:text-[10px] font-bold uppercase tracking-wide border ${isOut ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-[#7D8C7D]/20 text-brand-600 border-emerald-100'}">
+                ${log.direction}
+            </span>
+        </td>
+        <td class="px-3 md:px-6 py-3 font-bold text-slate-700 text-xs md:text-sm">${log.name}</td>
+        <td class="hidden sm:table-cell px-6 py-3 text-xs text-slate-500">${log.branch || 'Main'}</td>
+        <td class="px-3 md:px-6 py-3 text-right font-mono font-bold text-xs md:text-sm ${isOut ? 'text-rose-600' : 'text-brand-600'}">
+            ${isOut ? '-' : '+'}${log.quantity_used}
+        </td>
+    </tr>`;
     });
 }
 
@@ -2188,7 +2990,7 @@ function fetchUsers() {
             users.forEach(u => {
                 // 1. Role Badges
                 let roleColor = 'bg-slate-100 text-slate-500 border border-slate-200'; // Staff default
-                if (u.role === 'admin') roleColor = 'bg-indigo-50 text-indigo-600 border border-indigo-100';
+                if (u.role === 'admin') roleColor = 'bg-[#7D8C7D]/20 text-brand-600 border border-emerald-100';
                 if (u.role === 'owner') roleColor = 'bg-purple-50 text-purple-600 border border-purple-100 ring-2 ring-purple-500/10';
 
                 // 2. Branch Badges
@@ -2355,7 +3157,7 @@ function openUserModal() {
                     branches.forEach(b => {
                         container.innerHTML += `
                             <button type="button" onclick="selectUserBranch('${b.name}')" 
-                                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 transition">
+                                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-[#7D8C7D]/20 hover:text-brand-600 transition">
                                 ${b.name}
                             </button>`;
                     });
@@ -2364,52 +3166,627 @@ function openUserModal() {
     }
 }
 
+
 // ==========================================
-// 0. AUTH & ROLE MANAGEMENT
+// 16. ADMIN ROLES PAGE LOGIC
 // ==========================================
 
-let currentUser = null;
+function fetchRoleStats() {
+    // We reuse the existing /api/users endpoint to calculate stats client-side
+    fetch(`${API_BASE}/api/users`)
+        .then(res => res.json())
+        .then(users => {
+            if (users.error) return; // If permission denied, numbers stay 0
 
-async function checkCurrentUser() {
-    try {
-        const res = await fetch(`${API_BASE}/api/me`);
-        if (!res.ok) {
-            // If session expired or invalid, logout
-            doLogout();
-            return;
+            // Initialize counts
+            let counts = { owner: 0, admin: 0, staff: 0 };
+
+            // Count roles
+            users.forEach(u => {
+                const r = (u.role || 'staff').toLowerCase();
+                if (counts[r] !== undefined) {
+                    counts[r]++;
+                }
+            });
+
+            // Animate Numbers (Simple increment effect)
+            animateValue("count-owner", 0, counts.owner, 1000);
+            animateValue("count-admin", 0, counts.admin, 1000);
+            animateValue("count-staff", 0, counts.staff, 1000);
+        })
+        .catch(err => console.error("Role stats error:", err));
+}
+
+// Helper: Number Animation
+function animateValue(id, start, end, duration) {
+    const obj = document.getElementById(id);
+    if (!obj) return;
+    let startTimestamp = null;
+    const step = (timestamp) => {
+        if (!startTimestamp) startTimestamp = timestamp;
+        const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+        obj.innerHTML = Math.floor(progress * (end - start) + start);
+        if (progress < 1) {
+            window.requestAnimationFrame(step);
         }
-        currentUser = await res.json();
+    };
+    window.requestAnimationFrame(step);
+}
 
-        // 1. Update UI with User Info
-        updateUserInterface();
+// ==========================================
+// 17. OWNER SETTINGS (Governance)
+// ==========================================
 
-        // 2. Apply Role Restrictions
-        applyRolePermissions();
+function initOwnerSettings() {
+    // Fetch current status
+    fetch(`${API_BASE}/api/admin/settings`)
+        .then(res => res.json())
+        .then(data => {
+            const toggle = document.getElementById('lockdownToggle');
+            const status = document.getElementById('lockdownStatus');
 
-    } catch (err) {
-        console.error("Auth check failed", err);
+            if (toggle) {
+                toggle.checked = data.lockdown;
+                status.textContent = data.lockdown ? "Active" : "Off";
+                status.className = data.lockdown
+                    ? "ml-3 text-sm font-bold text-rose-600 animate-pulse"
+                    : "ml-3 text-sm font-medium text-slate-700";
+            }
+        })
+        .catch(err => console.error(err));
+}
+
+function toggleSystemLockdown() {
+    const toggle = document.getElementById('lockdownToggle');
+    const isLocked = toggle.checked;
+
+    fetch(`${API_BASE}/api/admin/lockdown`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: isLocked })
+    })
+        .then(res => res.json())
+        .then(data => {
+            showToast(data.message);
+            initOwnerSettings(); // Refresh UI
+        });
+}
+
+function wipeAuditLogs() {
+    if (confirm("⚠️ CRITICAL WARNING ⚠️\n\nAre you sure you want to delete ALL system logs?\nThis action cannot be undone.")) {
+        fetch(`${API_BASE}/api/admin/clear-logs`, { method: 'DELETE' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) alert(data.error);
+                else showToast("Audit logs cleared");
+            });
     }
 }
 
-function updateUserInterface() {
-    // Example: You could add a welcome message in the navbar if you have an element for it
-    // document.getElementById('userNameDisplay').textContent = currentUser.name;
-    console.log(`Logged in as: ${currentUser.name} (${currentUser.role})`);
+
+// ==========================================
+// 18. QR GENERATOR & PRINTING
+// ==========================================
+
+// A. Generate Custom QR in the QR Section
+function generateCustomQR() {
+    const text = document.getElementById('qrGenInput').value.trim();
+    const container = document.getElementById('qrGenCanvas');
+    const printBtn = document.getElementById('printQrBtn');
+
+    if (!text) return alert("Please enter text or Batch ID");
+
+    container.innerHTML = ""; // Clear previous
+
+    // Generate new QR
+    new QRCode(container, {
+        text: text,
+        width: 128,
+        height: 128,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.H
+    });
+
+    // Show Print Button
+    printBtn.classList.remove('hidden');
 }
 
-function applyRolePermissions() {
-    if (!currentUser) return;
+// B. Print the Custom QR
+function printCustomQR() {
+    const container = document.getElementById('qrGenCanvas');
+    const img = container.querySelector('img');
+    if (!img) return;
 
-    // DEFINITION: Who can see what?
-    const adminMenu = document.getElementById('adminMenuBtn'); // We need to add this ID to HTML
+    const win = window.open('', '', 'height=500,width=500');
+    win.document.write('<html><head><title>Print QR</title></head><body style="text-align:center; padding-top: 50px;">');
+    win.document.write(`<img src="${img.src}" style="width:200px; height:200px; border: 1px solid #ccc; padding: 10px;">`);
+    win.document.write(`<p style="font-family: monospace; margin-top: 10px; font-size: 20px;">${document.getElementById('qrGenInput').value}</p>`);
+    win.document.write('</body></html>');
+    win.document.close();
+    win.print();
+}
 
-    // RULE: Only 'owner' and 'admin' can see the Admin Menu
-    if (currentUser.role === 'staff') {
-        if (adminMenu) adminMenu.classList.add('hidden'); // Hide completely
+// C. Auto-Generate QR inside Item Details Modal
+function generateDetailQR(qrText) {
+    const container = document.getElementById('detail_qr_image');
+    if (!container) return;
+    container.innerHTML = ""; // Clear
 
-        // Redirect if they try to access a restricted page manually
-        // (Optional safety check)
+    if (qrText && qrText !== '-' && qrText !== 'N/A') {
+        new QRCode(container, {
+            text: qrText,
+            width: 64, // Smaller for modal
+            height: 64
+        });
     } else {
-        if (adminMenu) adminMenu.classList.remove('hidden');
+        container.innerHTML = "<span class='text-[8px] text-slate-300 flex items-center justify-center h-full'>No ID</span>";
+    }
+}
+
+// D. Print from Item Details
+function printDetailQR() {
+    const text = document.getElementById('detail_qr').textContent;
+    const container = document.getElementById('detail_qr_image');
+    const img = container.querySelector('img');
+
+    if (!img) return alert("No QR code to print.");
+
+    const win = window.open('', '', 'height=500,width=500');
+    win.document.write('<html><head><title>Print Label</title></head><body style="text-align:center; padding-top: 50px;">');
+    win.document.write(`<img src="${img.src}" style="width:200px; height:200px;">`);
+    win.document.write(`<p style="font-family: monospace; font-weight:bold;">${document.getElementById('detail_name').textContent}</p>`);
+    win.document.write(`<p style="font-family: monospace;">${text}</p>`);
+    win.document.write('</body></html>');
+    win.document.close();
+    win.print();
+}
+
+
+// ==========================================
+// 19. OWNER GOVERNANCE (Broadcast, Backup, Kill Switch)
+// ==========================================
+
+function sendSystemBroadcast() {
+    const input = document.getElementById('broadcastMsg');
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    fetch(`${API_BASE}/api/admin/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg })
+    })
+        .then(res => res.json())
+        .then(data => {
+            showToast("📢 Broadcast Sent!");
+            input.value = "";
+        });
+}
+
+function forceLogoutAll() {
+    if (!confirm("⚡ EMERGENCY: Are you sure you want to force logout ALL users?\nThey will be disconnected immediately.")) return;
+
+    fetch(`${API_BASE}/api/admin/kill-sessions`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => showToast("⚡ Kill command executed."));
+}
+
+function downloadSystemBackup() {
+    window.open(`${API_BASE}/api/admin/backup`, '_blank');
+}
+
+// //////////////////////////////////////// //
+//      📢 SYSTEM GOVERNANCE SOCKET          //
+// //////////////////////////////////////// //
+const governanceSocket = io(API_BASE === "" ? window.location.origin : API_BASE);
+
+// Handlers for real-time system broadcasts from the Owner
+governanceSocket.on('system_broadcast', (data) => {
+    const msg = data.message;
+    const div = document.createElement('div');
+
+    // Updated: Using Brand Wine (brand-900) and Cloud (brand-100)
+    div.className = "fixed top-10 left-1/2 -translate-x-1/2 bg-brand-900 text-white px-6 py-4 rounded-xl shadow-2xl z-[300] flex items-center gap-4 animate-bounce-slight border border-white/10";
+    div.innerHTML = `
+        <span class="text-2xl">📢</span>
+        <div>
+            <p class="text-xs font-bold uppercase text-brand-100 opacity-60">System Announcement</p>
+            <p class="font-bold text-sm">${msg}</p>
+        </div>
+        <button onclick="this.parentElement.remove()" class="bg-white/20 hover:bg-white/30 rounded-full w-6 h-6 flex items-center justify-center text-[10px]">✕</button>
+    `;
+    document.body.appendChild(div);
+
+    // Auto remove after 10s
+    setTimeout(() => div.remove(), 10000);
+});
+
+
+// //////////////////////////////////////// //
+//      🧠 LUX AI DASHBOARD RENDERER         //
+// //////////////////////////////////////// //
+async function initAIModule() {
+    const aiTextEl = document.getElementById('dash-ai-text');
+    const aiStatsEl = document.getElementById('dash-ai-stats');
+
+    if (!aiTextEl) return;
+
+    // 1. Reset & Loading State
+    aiTextEl.innerHTML = `<span class="animate-pulse opacity-50">Consulting AI model...</span>`;
+    aiStatsEl.innerHTML = `<span>⏳</span> Syncing`;
+    aiStatsEl.className = "w-fit px-2 py-1 bg-white/5 border border-white/10 rounded-lg text-[9px] font-bold text-brand-100 flex items-center gap-2";
+
+    try {
+        const res = await fetch(`${API_BASE}/api/ai/analyze`);
+        const data = await res.json();
+
+        // 2. Render Summary with smooth fade
+        aiTextEl.style.opacity = 0;
+        setTimeout(() => {
+            aiTextEl.innerHTML = data.insight_text || "No insights available.";
+            aiTextEl.style.opacity = 1;
+            aiTextEl.classList.add('transition-opacity', 'duration-500');
+        }, 200);
+
+        // 3. Update Badge (Linen, Wine, Rose, and Sage Green theme)
+        let badgeClass = "bg-brand-500/20 text-brand-100 border-brand-500/30";
+        let icon = "🤖";
+        const status = data.status_badge || "Ready";
+
+        if (status.includes('Critical') || status.includes('Warning')) {
+            badgeClass = "bg-rose-500/20 text-rose-300 border-rose-500/30";
+            icon = "🚨";
+        } else if (status.includes('Healthy')) {
+            // Sage Green (#7D8C7D) for healthy status
+            badgeClass = "bg-[#7D8C7D]/20 text-white border-[#7D8C7D]/30";
+            icon = "✅";
+        }
+
+        aiStatsEl.className = `w-fit px-2 py-1 rounded-lg text-[9px] font-bold border shadow-sm flex items-center gap-2 ${badgeClass}`;
+        aiStatsEl.innerHTML = `<span>${icon}</span> ${status}`;
+
+        // 4. Render Suggestions button if recommendations exist
+        if (data.recommended_order && data.recommended_order.length > 0) {
+            renderAiSuggestions(data.recommended_order);
+        }
+
+    } catch (error) {
+        console.error("AI Fetch Error:", error);
+        aiTextEl.innerHTML = "Connection to LUX AI failed. Check your API key.";
+        aiStatsEl.innerHTML = "Offline";
+    }
+}
+
+
+// //////////////////////////////////////// //
+//      ✨ AI RECOMMENDATION RENDERER        //
+// //////////////////////////////////////// //
+function renderAiSuggestions(suggestions) {
+    const container = document.getElementById('dash-ai-text').parentNode;
+
+    // Remove old button if exists to prevent duplicates
+    const oldBtn = document.getElementById('ai-restock-btn');
+    if (oldBtn) oldBtn.remove();
+
+    const btn = document.createElement('button');
+    btn.id = "ai-restock-btn";
+
+    // Updated: Using Sage Green (#7D8C7D) for the button as requested (Touch of Green)
+    btn.className = "mt-4 w-full py-3 bg-[#7D8C7D] hover:bg-[#6B786B] rounded-xl text-xs font-bold text-white shadow-lg shadow-black/10 transition flex items-center justify-center gap-2 transform active:scale-95";
+    btn.innerHTML = `<span>⚡</span> Review ${suggestions.length} AI Recommendations`;
+
+    // Opens the specialized AI analysis overlay
+    btn.onclick = () => openAiOverlay(suggestions);
+
+    container.appendChild(btn);
+}
+
+// ==========================================
+// 🤖 LUX AI OVERLAY LOGIC
+// ==========================================
+
+function openAiOverlay(suggestions) {
+    const overlay = document.getElementById('aiOverlay');
+    const list = document.getElementById('aiRecommendationsList');
+
+    if (!overlay || !list) return;
+
+    list.innerHTML = '';
+
+    if (!suggestions || suggestions.length === 0) {
+        list.innerHTML = `
+            <div class="flex flex-col items-center justify-center py-10 text-[#8D6E9E] opacity-70">
+                <i class="fas fa-check-circle text-4xl mb-3"></i>
+                <span class="text-sm font-bold">LUX detects no urgent issues.</span>
+            </div>`;
+    } else {
+        suggestions.forEach(item => {
+            // Sanitize inputs
+            const safeName = (item.item || 'Unknown').replace(/'/g, "\\'");
+            const reason = item.reason || 'Recommended by LUX';
+            const qty = item.qty || 10;
+            const branch = item.branch || 'Main';
+
+            // ➤ THEMED CARD DESIGN
+            list.innerHTML += `
+            <div class="flex items-center justify-between p-4 mb-3 rounded-2xl bg-white border border-[#5E4074]/10 shadow-sm hover:shadow-md transition-all group relative overflow-hidden">
+                <div class="absolute left-0 top-0 bottom-0 w-1.5 bg-gradient-to-b from-[#382546] to-[#5E4074]"></div>
+                
+                <div class="flex items-center gap-4 pl-3">
+                    <div class="bg-[#5E4074]/10 text-[#5E4074] w-12 h-12 rounded-xl flex items-center justify-center font-bold text-xl shrink-0 shadow-sm border border-[#5E4074]/5">
+                        📦
+                    </div>
+                    <div>
+                        <h4 class="font-extrabold text-[#382546] text-sm leading-tight">${item.item}</h4>
+                        <p class="text-[10px] text-white font-bold uppercase tracking-wide mt-1.5 bg-[#8D6E9E] w-fit px-2 py-0.5 rounded-md shadow-sm">
+                            ${reason}
+                        </p>
+                    </div>
+                </div>
+
+                <div class="flex flex-col items-end gap-2">
+                    <span class="text-xs font-bold text-[#8D6E9E]">Qty: <span class="text-[#382546] text-lg font-extrabold">${qty}</span></span>
+                    
+                    <button onclick="openRestockModal('${safeName}', '${branch}', 0); setTimeout(() => { document.getElementById('restock_qty').value = ${qty}; }, 100); closeAiOverlay();" 
+                        class="px-4 py-2 rounded-xl bg-[#5E4074] hover:bg-[#382546] text-white text-xs font-bold transition shadow-md hover:shadow-lg active:scale-95 flex items-center gap-2">
+                        <span>Order Now</span>
+                        <i class="fas fa-arrow-right"></i>
+                    </button>
+                </div>
+            </div>
+            `;
+        });
+    }
+
+    overlay.classList.remove('hidden');
+}
+
+function closeAiOverlay() {
+    const overlay = document.getElementById('aiOverlay');
+    if (overlay) overlay.classList.add('hidden');
+}
+
+
+// The "Brain" - Analyzes data to find the most important story
+function runHeuristicAnalysis(items) {
+    if (!items || items.length === 0) {
+        return { message: "Inventory is empty. Add stock to generate predictive insights.", stat: "0 Items" };
+    }
+
+    let criticalItem = null;
+    let lowestDaysLeft = 999;
+    let totalValue = 0;
+    let deadStockCount = 0;
+
+    items.forEach(item => {
+        // Calculate Total Value
+        const price = parseFloat(item.price) || 0;
+        const qty = parseInt(item.quantity) || 0;
+        const usage = parseInt(item.monthly_usage) || 1; // Avoid divide by zero
+        totalValue += price * qty;
+
+        // Predict Stockout (Days remaining)
+        // Formula: (Current Stock / Monthly Usage) * 30 days
+        if (usage > 0 && qty > 0) {
+            const daysLeft = (qty / usage) * 30;
+            if (daysLeft < lowestDaysLeft) {
+                lowestDaysLeft = daysLeft;
+                criticalItem = item;
+            }
+        }
+
+        // Detect Dead Stock (Stock > 6 months of usage)
+        if (qty > (usage * 6)) {
+            deadStockCount++;
+        }
+    });
+
+    // ➤ DECISION TREE: Pick the most urgent insight
+
+    // Scenario A: Urgent Stockout Risk
+    if (criticalItem && lowestDaysLeft <= 7) {
+        const days = Math.round(lowestDaysLeft);
+        return {
+            message: `⚠️ <b>Critical Alert:</b> Based on current consumption velocity, <span class="text-rose-300 font-bold">${criticalItem.name}</span> will be fully depleted in approximately <b>${days} days</b>. Immediate procurement is recommended to avoid operational disruption.`,
+            stat: `📉 High Velocity: ${criticalItem.name}`
+        };
+    }
+
+    // Scenario B: Dead Stock Warning
+    if (deadStockCount > 3) {
+        return {
+            message: `📊 <b>Efficiency Insight:</b> I've detected <b>${deadStockCount} items</b> that are overstocked (exceeding 6 months of supply). This ties up roughly <b>₱${(totalValue * 0.15).toLocaleString()}</b> in stagnant capital. Consider running a promotion or reducing order frequency.`,
+            stat: `🐢 ${deadStockCount} Slow Movers`
+        };
+    }
+
+    // Scenario C: Healthy State (General Value Analysis)
+    return {
+        message: `✅ <b>System Optimal:</b> Inventory health is stable. Your total holding value is <b>₱${totalValue.toLocaleString()}</b>. No critical stockouts predicted for the next 14 days. Great job maintaining balance!`,
+        stat: `💰 Value: ₱${(totalValue / 1000).toFixed(1)}k`
+    };
+}
+
+// Visual Effect: Types text character by character
+function typeWriterEffect(element, html) {
+    element.innerHTML = ""; // Clear
+    element.classList.remove('animate-pulse');
+
+    // We use a temporary div to parse HTML tags so we don't break bold tags while typing
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+
+    // For simplicity in this specific "AI" context, we'll just fade it in smoothly 
+    // because parsing HTML tags for a typewriter effect is complex and prone to bugs.
+    element.innerHTML = html;
+    element.classList.add('animate-fade-in');
+}
+// ==========================================
+// ✨ LUX CHATBOT LOGIC
+// ==========================================
+
+function toggleLuxChat() {
+    const windowEl = document.getElementById('luxChatWindow');
+    const btn = document.getElementById('luxChatBtn');
+    if (!windowEl || !btn) return;
+
+    if (windowEl.classList.contains('hidden')) {
+        windowEl.classList.remove('hidden');
+        setTimeout(() => {
+            windowEl.classList.remove('scale-95', 'opacity-0');
+            windowEl.classList.add('scale-100', 'opacity-100');
+        }, 10);
+        btn.classList.add('hidden');
+    } else {
+        windowEl.classList.add('hidden');
+        btn.classList.remove('hidden');
+    }
+}
+
+function handleLuxImageSelect() {
+    const input = document.getElementById('luxImageInput');
+    const file = input.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = function () {
+        currentLuxImageBase64 = reader.result;
+        // Show Preview
+        const preview = document.getElementById('luxImagePreview');
+        const img = document.getElementById('luxPreviewImg');
+        img.src = currentLuxImageBase64;
+        preview.classList.remove('hidden');
+    }
+    reader.readAsDataURL(file);
+}
+
+function clearLuxImage() {
+    currentLuxImageBase64 = null;
+    document.getElementById('luxImageInput').value = "";
+    document.getElementById('luxImagePreview').classList.add('hidden');
+}
+
+async function sendLuxMessage(e) {
+    if (e) e.preventDefault();
+
+    const input = document.getElementById('luxChatInput');
+    const msg = input.value.trim();
+
+    // ➤ FIX: We use 'currentLuxImageBase64' which is now defined at the top
+    if (!msg && !currentLuxImageBase64) return;
+
+    let displayMsg = msg;
+    if (currentLuxImageBase64) {
+        displayMsg += `<br><img src="${currentLuxImageBase64}" class="mt-2 rounded-lg w-32 h-32 object-cover border border-white/20">`;
+    }
+
+    addChatBubble(displayMsg, 'user');
+    input.value = '';
+
+    const imageToSend = currentLuxImageBase64;
+    clearLuxImage();
+
+    const thinkingId = addChatBubble('<i class="fas fa-circle-notch fa-spin"></i> Analyzing...', 'lux', true);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include', // ➤ Added to prevent login loop
+            body: JSON.stringify({ message: msg, image: imageToSend })
+        });
+
+        // ➤ FIX: Explicitly define 'data' here to stop "ReferenceError: data is not defined"
+        const responseData = await res.json();
+
+        const thinkingEl = document.getElementById(thinkingId);
+        if (thinkingEl) thinkingEl.remove();
+
+        if (responseData.type === 'error') {
+            addChatBubble("⚠️ " + responseData.text, 'lux');
+        } else {
+            let formattedText = responseData.text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+            addChatBubble(formattedText, 'lux');
+        }
+    } catch (err) {
+        console.error(err);
+        document.getElementById(thinkingId)?.remove();
+        addChatBubble("Sorry, LUX is currently offline.", 'lux');
+    }
+}
+
+function addChatBubble(text, sender, isThinking = false) {
+    const container = document.getElementById('luxChatMessages');
+    const id = 'msg-' + Date.now();
+    const isUser = sender === 'user';
+
+    const userStyle = "bg-[#5E4074] text-white rounded-br-none shadow-md";
+    const luxStyle = "bg-white border border-slate-100 text-slate-600 rounded-tl-none shadow-sm";
+    const align = isUser ? "self-end flex-row-reverse" : "self-start";
+
+    // ➤ CHANGED: LUX Icon is now a Tooth
+    const avatar = isUser
+        ? `<div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs shrink-0 text-slate-500"><i class="fas fa-user"></i></div>`
+        : `<div class="w-8 h-8 rounded-full bg-gradient-to-br from-[#382546] to-[#5E4074] flex items-center justify-center text-xs text-white shrink-0 shadow-sm"><i class="fas fa-tooth"></i></div>`;
+
+    const html = `
+    <div id="${id}" class="flex gap-3 max-w-[85%] ${align} ${isThinking ? 'animate-pulse' : 'animate-fade-in-up'}">
+        ${avatar}
+        <div class="p-3 rounded-2xl text-sm leading-relaxed ${isUser ? userStyle : luxStyle}">
+            ${text}
+        </div>
+    </div>`;
+
+    container.insertAdjacentHTML('beforeend', html);
+    container.scrollTop = container.scrollHeight;
+
+    return id;
+}
+
+async function fetchPriceInsights() {
+    const list = document.getElementById('lux-price-prediction-list');
+    const summaryEl = document.getElementById('lux-market-summary');
+    const statusEl = document.getElementById('lux-market-status');
+
+    try {
+        const res = await fetch(`${API_BASE}/api/ai/market-intelligence`);
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error);
+
+        // 1. Update Dashboard Summary Widget
+        if (summaryEl) summaryEl.innerHTML = `"${data.market_summary}"`;
+        if (statusEl) statusEl.innerHTML = "Live Feed";
+
+        // 2. Update Analytics List (if on the analytics page)
+        if (list) {
+            list.innerHTML = "";
+            data.predictions.forEach(pred => {
+                const trendColor = pred.trend === 'Rising' ? 'text-rose-500' : 'text-emerald-500';
+                const trendIcon = pred.trend === 'Rising' ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down';
+
+                list.innerHTML += `
+                <div class="p-4 rounded-2xl bg-white border border-slate-100 hover:border-brand-500/30 transition group shadow-sm">
+                    <div class="flex justify-between items-start mb-1">
+                        <span class="font-bold text-slate-800 text-sm">${pred.item}</span>
+                        <span class="text-[9px] font-black uppercase ${trendColor} flex items-center gap-1">
+                            <i class="fas ${trendIcon}"></i> ${pred.trend}
+                        </span>
+                    </div>
+                    <div class="text-[10px] text-brand-600 font-bold mb-3 flex items-center gap-1">
+                        <i class="fas fa-truck-field"></i> ${pred.supplier}
+                    </div>
+                    <div class="flex justify-between items-center bg-slate-50 p-2 rounded-lg">
+                        <span class="text-[9px] text-slate-400 font-bold uppercase">LUX Prediction</span>
+                        <span class="text-xs font-extrabold text-[#382546]">₱${pred.forecast}</span>
+                    </div>
+                    <p class="mt-2 text-[10px] text-slate-500 italic leading-relaxed">Advice: ${pred.advice}</p>
+                </div>`;
+            });
+        }
+    } catch (err) {
+        console.error("Market Insight Error:", err);
+        if (summaryEl) summaryEl.innerHTML = "LUX is currently calculating trends...";
     }
 }
