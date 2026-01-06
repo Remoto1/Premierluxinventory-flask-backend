@@ -1195,6 +1195,81 @@ def analytics_branch_stock():
     return jsonify({"labels": labels, "values": values}), 200
 
 # ---------- SOCKET ANALYTICS BROADCASTER ----------
+# ---------- AI PREDICTIVE RESTOCKING ----------
+
+@app.get("/api/ai/predict-restock")
+def ai_predict_restock():
+    if "user_email" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # Staff see only their branch
+    branch_filter = {}
+    if session.get("role") == "staff" and session.get("branch") != "All":
+        branch_filter["branch"] = session.get("branch")
+
+    # Look back 90 days of consumption (stock OUT)
+    lookback_days = 90
+    now = datetime.now()
+    since = now - timedelta(days=lookback_days)
+
+    cons_query = {"direction": "out", "date": {"$gte": since}}
+    if branch_filter:
+        cons_query.update(branch_filter)
+
+    usage_docs = list(consumption_collection.find(cons_query))
+    # Build usage per (name, branch)
+    usage_map = {}
+    for u in usage_docs:
+        name = u.get("name")
+        branch = u.get("branch", "General")
+        qty = int(u.get("quantity_used", 0) or 0)
+        key = (name, branch)
+        usage_map[key] = usage_map.get(key, 0) + qty
+
+    # Fetch current inventory
+    inv_query = {}
+    if branch_filter:
+        inv_query.update(branch_filter)
+
+    items = list(inventory_collection.find(inv_query))
+    results = []
+
+    for item in items:
+        name = item.get("name")
+        branch = item.get("branch", "General")
+        current_stock = int(item.get("quantity", 0) or 0)
+        reorder_level = int(item.get("reorder_level", 0) or 0)
+
+        key = (name, branch)
+        total_used_90d = usage_map.get(key, 0)
+
+        # Average daily usage over the lookback window
+        avg_daily_usage = total_used_90d / lookback_days if total_used_90d > 0 else 0
+
+        if avg_daily_usage > 0:
+            days_until_out = current_stock / avg_daily_usage
+        else:
+            days_until_out = None  # no movement yet
+
+        # Simple recommendation: target 60 days of coverage
+        target_days = 60
+        target_stock = int(avg_daily_usage * target_days)
+        recommended_order = max(target_stock - current_stock, 0)
+
+        results.append({
+            "name": name,
+            "branch": branch,
+            "current_stock": current_stock,
+            "reorder_level": reorder_level,
+            "avg_daily_usage": round(avg_daily_usage, 2),
+            "days_until_out": round(days_until_out, 1) if days_until_out is not None else None,
+            "recommended_order": recommended_order
+        })
+
+    # Sort: items with lowest days_until_out first
+    results.sort(key=lambda r: (r["days_until_out"] is None, r["days_until_out"] or 9999))
+
+    return jsonify(results), 200
 
 def build_analytics_payload():
     # 1. Setup Dates
