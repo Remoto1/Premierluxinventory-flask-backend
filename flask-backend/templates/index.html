@@ -383,6 +383,7 @@
                   class="block w-full text-left py-2 px-3 rounded-xl hover:bg-brand-50 hover:text-brand-900 transition">Suppliers</button>
                 <button onclick="showPage('orders'); closeAllDropdowns();"
                   class="block w-full text-left py-2 px-3 rounded-xl hover:bg-brand-50 hover:text-brand-900 transition">Orders</button>
+
               </div>
             </div>
 
@@ -457,24 +458,67 @@
       </div>
     </header>
 
-    <div id="mobileMenu" class="hidden md:!hidden fixed top-20 left-0 right-0 px-3 z-[100] animate-fade-in">
+    <div id="mobileMenu"
+     class="hidden md:!hidden fixed top-20 left-0 right-0 px-3 z-[100] animate-fade-in">
+  <div class="bg-brand-900/95 backdrop-blur-xl border border-white/10 rounded-2xl
+              p-4 shadow-[0_18px_45px_rgba(0,0,0,0.45)]
+              flex flex-col gap-4 text-slate-100 overflow-y-auto max-h-[85vh] custom-scrollbar">
 
-      <div
-        class="bg-brand-900 border border-white/10 rounded-2xl p-4 shadow-2xl flex flex-col gap-4 text-slate-100 overflow-y-auto max-h-[85vh] custom-scrollbar">
+         <button onclick="showPage('dashboard'); toggleMobileMenu()"
+      class="p-3 rounded-xl bg-white/5 hover:bg-white/10 text-left font-bold
+             flex items-center gap-3 transition text-sm">
+      <i class="fas fa-gauge text-brand-100"></i>
+      <span>Dashboard</span>
+    </button>
 
-        <button onclick="showPage('dashboard'); toggleMobileMenu()"
-          class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-left font-bold flex items-center gap-3 transition text-sm">
-          <span>🏠</span> Dashboard
-        </button>
-        <!-- Analytics Center (new) -->
-        <button onclick="showPage('analytics'); toggleMobileMenu()"
-        class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-left font-bold flex items-center gap-3 transition text-sm">
-        <span>📈</span> Analytics Center
-        </button>
+    <button onclick="showPage('analytics'); toggleMobileMenu()"
+      class="p-3 rounded-xl bg-white/5 hover:bg-white/10 text-left font-bold
+             flex items-center gap-3 transition text-sm">
+      <i class="fas fa-chart-line text-emerald-200"></i>
+      <span>Analytics Center</span>
+    </button>
+    <!-- STEP 4A – ANALYTICS MINI KPI CHIPS (NEW) -->
+    <div class="flex gap-2 mt-1 ml-1">
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full
+                   bg-white/10 text-[10px] font-semibold text-brand-100">
+        Low stock:
+        <span id="mm-low-stock" class="ml-1">0</span>
+      </span>
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full
+                   bg-rose-500/20 text-[10px] font-semibold text-rose-100">
+        Expiring:
+        <span id="mm-expiring" class="ml-1">0</span>
+      </span>
+    </div>
+    <!-- STEP 5A – MOBILE ALERTS PANEL (NEW) -->
+    <div class="bg-white/5 rounded-xl p-3 border border-white/10">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="w-7 h-7 rounded-full bg-rose-500/20 flex items-center justify-center text-rose-200">
+            <i class="fas fa-bell"></i>
+          </span>
+          <div>
+            <p class="text-[11px] font-bold uppercase tracking-[0.18em] text-brand-100/70">
+              Alerts
+            </p>
+            <p class="text-[10px] text-slate-300">Low stock & expiry signals</p>
+          </div>
+        </div>
+        <span id="mm-alert-count"
+              class="text-[10px] px-2 py-0.5 rounded-full bg-white/10 font-semibold text-brand-100">
+          0
+        </span>
+      </div>
+      <!-- NOTICE: this uses your existing mobileAlertsList ID, so JS keeps working -->
+      <div id="mobileAlertsList" class="space-y-2 max-h-40 overflow-y-auto custom-scrollbar"></div>
+    </div>
 
 
         <div class="space-y-1">
-          <p class="text-[8px] font-bold text-brand-100/40 uppercase tracking-widest ml-2">Inventory</p>
+           <p class="text-[10px] font-bold text-brand-100/60 uppercase tracking-[0.2em] ml-2 mt-1">
+      Inventory
+    </p>
+    <div class="h-px bg-white/5 mt-1 mb-2 mx-1"></div>
           <div class="grid grid-cols-2 gap-2">
             <button onclick="showPage('inventory'); toggleMobileMenu()"
               class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-left text-xs flex items-center gap-2">
@@ -488,7 +532,10 @@
         </div>
 
         <div id="mobileProcurementSection" class="space-y-1">
-          <p class="text-[8px] font-bold text-brand-100/40 uppercase tracking-widest ml-2">Procurement</p>
+       <p class="text-[10px] font-bold text-brand-100/60 uppercase tracking-[0.2em] ml-2 mt-1">
+     Procurement
+    </p>
+    <div class="h-px bg-white/5 mt-1 mb-2 mx-1"></div>
           <div class="grid grid-cols-2 gap-2">
             <button onclick="showPage('suppliers'); toggleMobileMenu()"
               class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-left text-xs flex items-center gap-2">
@@ -502,7 +549,9 @@
         </div>
 
         <div id="mobileAdminMenu" class="space-y-2 border-t border-white/10 pt-4">
-          <p class="text-[9px] font-bold text-brand-100/40 uppercase tracking-widest ml-3">Administration</p>
+           <p class="text-[10px] font-bold text-brand-100/60 uppercase tracking-[0.2em] ml-2 mt-1">
+     Administration
+    </p>
 
           <div class="grid grid-cols-2 gap-2">
             <button onclick="showPage('compliance'); toggleMobileMenu()"
@@ -534,10 +583,11 @@
           </button>
         </div>
 
-        <button onclick="doLogout()"
-          class="mt-1 p-3 rounded-xl bg-[#7D8C7D] text-white text-center font-bold shadow-lg active:scale-95 transition text-sm">
-          <i class="fas fa-sign-out-alt mr-2"></i> Sign Out
-        </button>
+       <button onclick="doLogout()"
+  class="mt-1 p-3 rounded-xl bg-rose-600 text-white text-center font-bold shadow-lg active:scale-95 transition text-sm hover:bg-rose-700">
+  <i class="fas fa-sign-out-alt mr-2"></i> Sign Out
+</button>
+
 
       </div>
     </div>
@@ -656,6 +706,7 @@
                 <h3 class="flex items-center gap-2 text-base md:text-lg font-bold text-indigo-100">
                   <span class="text-xl">✨</span> LUX AI Insights
                 </h3>
+                
                 <button onclick="initAIModule(); fetchPriceInsights();"
                   class="p-2 rounded-full bg-white/5 hover:bg-white/20 text-indigo-200 hover:text-white transition-all active:scale-90 border border-white/5">
                   <svg class="w-3 h-3 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -691,6 +742,60 @@
             </div>
           </div>
         </section>
+<section class="mt-6">
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- LEFT COLUMN: AI Predictive Restocking -->
+    <div class="space-y-6">
+      <div class="bg-white border border-slate-200 rounded-2xl md:rounded-3xl shadow-sm p-4 md:p-6 flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-slate-800 text-sm md:text-lg flex items-center gap-2">
+            <span class="bg-brand-50 text-brand-700 p-1.5 rounded-lg text-xs">
+              <i class="fas fa-brain"></i>
+            </span>
+            AI Predictive Restocking
+          </h3>
+          <button onclick="fetchPredictiveRestock(true)"
+            class="text-[11px] font-bold text-brand-700 bg-brand-50 hover:bg-brand-100
+                   px-3 py-1 rounded-full border border-brand-100 transition shadow-sm">
+            Refresh
+          </button>
+        </div>
+        <div id="dash-ai-restock-list"
+             class="flex-1 overflow-y-auto max-h-[220px] custom-scrollbar text-xs">
+          <div class="py-4 text-center text-xs text-slate-400">
+            Click “Refresh” to see items likely to run out soon.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN: Auto Replenishment -->
+    <div class="space-y-6">
+      <div class="bg-white border border-slate-200 rounded-2xl md:rounded-3xl shadow-sm p-4 md:p-6 flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-slate-800 text-sm md:text-lg flex items-center gap-2">
+            <span class="bg-emerald-50 text-emerald-700 p-1.5 rounded-lg text-xs">
+              <i class="fas a-sync-alt"></i>
+            </span>
+            Auto Replenishment
+          </h3>
+          <button onclick="fetchReplenishmentRecommendations(true)"
+            class="text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100
+                   px-3 py-1 rounded-full border border-emerald-100 transition shadow-sm">
+            Refresh
+          </button>
+        </div>
+        <div id="dash-auto-replenish-list"
+             class="flex-1 overflow-y-auto max-h-[220px] custom-scrollbar text-xs">
+          <div class="py-4 text-center text-xs text-slate-400">
+            Click “Refresh” to see recommended replenishment orders.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 
         <section id="inventory-section" class="hidden space-y-4 md:space-y-6 animate-fade-in" x-data="{ search: '' }">
 
@@ -825,9 +930,7 @@
           </div>
         </section>
 
-
         <section id="analytics-section" class="hidden space-y-4 md:space-y-8 animate-fade-in">
-
           <div class="pt-2">
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
