@@ -117,7 +117,7 @@ function lockBranchUI(branchName) {
 // [main.js] - FIXED initDashboard (Solves "Active Branch KPI Syncing" issue)
 async function initDashboard() {
     console.log("Initializing Dashboard...");
-
+ 
     // FETCH INDEPENDENTLY (So one error doesn't kill the whole dashboard)
 
     // 1. Inventory Data
@@ -169,40 +169,52 @@ async function initDashboard() {
     const expiringCount = window.bellState?.expiringItems?.length || 0;
     const expEl = document.getElementById('dash-expiring');
     if (expEl) expEl.textContent = expiringCount;
+     // 🔁 MIRROR EXPIRING COUNT INTO MOBILE MENU
+  const mmExp = document.getElementById('mm-expiring');
+  if (mmExp) mmExp.textContent = expiringCount;
 }
 
 // Helper to render restock table (extracted for clarity)
 function renderRestockTable(lowStockItems) {
-    const restockTable = document.getElementById('dash-restock-table');
-    if (!restockTable) return;
+  const restockTable = document.getElementById('dash-restock-table');
+  if (!restockTable) return;
 
-    restockTable.innerHTML = '';
-    const criticalItems = lowStockItems
-        .sort((a, b) => ((a.quantity - a.reorder_level) - (b.quantity - b.reorder_level)))
-        .slice(0, 5);
+  restockTable.innerHTML = '';
+  const criticalItems = lowStockItems
+    .sort((a, b) => ((a.quantity - a.reorder_level) - (b.quantity - b.reorder_level)))
+    .slice(0, 5);
 
-    if (criticalItems.length === 0) {
-        restockTable.innerHTML = `<tr><td colspan="3" class="px-6 py-8 text-center text-slate-400 text-xs font-medium">✅ All stock levels healthy</td></tr>`;
-    } else {
-        criticalItems.forEach(item => {
-            const row = `
-            <tr class="border-b border-slate-50 last:border-0 hover:bg-brand-50/50">
-                <td class="px-4 md:px-6 py-3">
-                    <div class="font-bold text-slate-700 text-sm">${item.name}</div>
-                    <div class="md:hidden text-[10px] text-slate-400 font-medium">${item.branch}</div> 
-                </td>
-                <td class="px-4 md:px-6 py-3 text-right font-bold text-rose-600">${item.quantity}</td>
-                <td class="px-4 md:px-6 py-3 text-center">
-                    <button onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.quantity})" 
-                        class="bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-bold transition">
-                        Restock
-                    </button>
-                </td>
-            </tr>`;
-            restockTable.innerHTML += row;
-        });
-    }
+  if (criticalItems.length === 0) {
+    restockTable.innerHTML = `<tr>
+      <td colspan="3"
+          class="px-6 py-8 text-center text-slate-400 text-xs font-medium">
+        ✅ All stock levels healthy
+      </td>
+    </tr>`;
+  } else {
+    criticalItems.forEach(item => {
+      const row = `
+        <tr class="border-b border-slate-50 last:border-0 hover:bg-brand-50/50">
+          <td class="px-4 md:px-6 py-3">
+            <div class="font-bold text-slate-700 text-sm">${item.name}</div>
+            <div class="md:hidden text-[10px] text-slate-400 font-medium">${item.branch}</div>
+          </td>
+          <td class="px-4 md:px-6 py-3 text-right font-bold text-rose-600">
+            ${item.quantity}
+          </td>
+          <td class="px-4 md:px-6 py-3 text-center">
+            <button onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.quantity})"
+              class="bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white
+                     px-3 py-1.5 rounded-lg text-[10px] font-bold transition">
+              Restock
+            </button>
+          </td>
+        </tr>`;
+      restockTable.innerHTML += row;
+    });
+  }
 }
+
 // ==========================================
 // 1. GLOBAL HELPERS & STATE
 // ==========================================
@@ -861,6 +873,9 @@ function renderSharedBell() {
             alertBadge.classList.add('hidden');
         }
     }
+  // STEP 5B – MIRROR ALERT COUNT INTO MOBILE MENU (NEW)
+  const mmAlertCount = document.getElementById('mm-alert-count');
+  if (mmAlertCount) mmAlertCount.textContent = totalAlerts;
 
     // 2. Prepare HTML Content
     const appendContent = (html) => {
@@ -1932,6 +1947,84 @@ function hideSplashScreen() {
         }, 700);
     }
 }
+// AUTO REPLENISHMENT RECOMMENDATIONS (FRONTEND)
+async function fetchReplenishmentRecommendations(isDashboard = false) {
+  const containerId = isDashboard ? 'dash-auto-replenish-list' : 'auto-replenish-list';
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="py-6 text-center text-xs text-slate-400">
+      <i class="fas fa-circle-notch fa-spin mr-2 text-brand-600"></i>
+      Calculating recommended replenishments...
+    </div>
+  `;
+
+  try {
+    const res = await fetch(REPLENISH_API_URL, {
+      credentials: 'include'
+    });
+    if (!res.ok) throw new Error('Failed to load recommendations');
+
+    const data = await res.json();
+
+    if (!Array.isArray(data) || data.length === 0) {
+      container.innerHTML = `
+        <div class="py-6 text-center text-xs text-slate-400">
+          No items need replenishment based on current rules.
+        </div>
+      `;
+      return;
+    }
+
+    let html = '';
+    data.slice(0, isDashboard ? 5 : 20).forEach(item => {
+      const name = item.name || 'Unknown';
+      const branch = item.branch || 'Main';
+      const currentQty = item.current_quantity ?? 0;
+      const reorderPoint = item.reorder_point ?? 0;
+      const suggested = item.suggested_order_qty ?? 0;
+
+      html += `
+        <div class="flex items-start justify-between py-2.5 border-b border-slate-100 last:border-0">
+          <div class="flex flex-col">
+            <span class="text-[13px] font-semibold text-slate-800">
+              ${name}
+            </span>
+            <span class="text-[10px] text-slate-400 font-medium">
+              ${branch}
+            </span>
+            <span class="mt-1 text-[11px] text-slate-500">
+              Stock: <span class="font-semibold">${currentQty}</span>
+              • Reorder point: <span class="font-semibold">${reorderPoint}</span>
+            </span>
+            <span class="text-[11px] text-slate-500">
+              Suggested order: <span class="font-semibold">${suggested}</span>
+            </span>
+          </div>
+          <div class="flex flex-col items-end gap-1">
+            <button
+              onclick="openRestockModal('${name.replace(/'/g, "\\'")}', '${branch}', ${currentQty})"
+              class="mt-1 px-2.5 py-1 rounded-lg bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white
+                     text-[10px] font-bold transition">
+              Restock: ${suggested}
+            </button>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    container.innerHTML = `
+      <div class="py-6 text-center text-xs text-rose-500">
+        Error loading replenishment suggestions. Please try again.
+      </div>
+    `;
+  }
+}
+
 
 // //////////////////////////////////////// //
 //      ✨ REQUEST NEW ITEM LOGIC            //
@@ -2744,6 +2837,86 @@ async function executeDelete() {
     } finally {
         closeDeleteModal();
     }
+}
+// AI PREDICTIVE RESTOCKING (FRONTEND)
+async function fetchPredictiveRestock(isDashboard = false) {
+  const containerId = isDashboard ? 'dash-ai-restock-list' : 'ai-restock-list';
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="py-6 text-center text-xs text-slate-400">
+      <i class="fas fa-circle-notch fa-spin mr-2 text-brand-600"></i>
+      Analyzing consumption patterns...
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/ai/predict-restock`, {
+      credentials: 'include'
+    });
+    if (!res.ok) throw new Error('Failed to load predictions');
+    const data = await res.json();
+
+    if (!Array.isArray(data) || data.length === 0) {
+      container.innerHTML = `
+        <div class="py-6 text-center text-xs text-slate-400">
+          No predictive restock signals yet.
+        </div>
+      `;
+      return;
+    }
+
+    let html = '';
+    data.slice(0, isDashboard ? 5 : 10).forEach(item => {
+      const days = item.days_until_out !== null
+        ? `${item.days_until_out} days`
+        : 'No recent usage';
+      const riskBadge = item.days_until_out !== null && item.days_until_out <= 30
+        ? 'bg-rose-50 text-rose-600 border border-rose-200'
+        : 'bg-emerald-50 text-emerald-600 border border-emerald-200';
+
+      html += `
+        <div class="flex items-start justify-between py-2.5 border-b border-slate-100 last:border-0">
+          <div class="flex flex-col">
+            <span class="text-[13px] font-semibold text-slate-800">
+              ${item.name}
+            </span>
+            <span class="text-[10px] text-slate-400 font-medium">
+              ${item.branch}
+            </span>
+            <span class="mt-1 text-[11px] text-slate-500">
+              Stock: <span class="font-semibold">${item.current_stock}</span>
+              • Reorder lvl: <span class="font-semibold">${item.reorder_level}</span>
+            </span>
+            <span class="text-[11px] text-slate-500">
+              Avg daily usage: <span class="font-semibold">${item.avg_daily_usage}</span>
+            </span>
+          </div>
+          <div class="flex flex-col items-end gap-1">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${riskBadge}">
+              ${days}
+            </span>
+            <button
+              onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.current_stock})"
+              class="mt-1 px-2.5 py-1 rounded-lg bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white
+                     text-[10px] font-bold transition">
+              Restock: ${item.recommended_order}
+            </button>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    container.innerHTML = `
+      <div class="py-6 text-center text-xs text-rose-500">
+        Error loading predictive restocking. Please try again.
+      </div>
+    `;
+  }
 }
 
 // ==========================================
