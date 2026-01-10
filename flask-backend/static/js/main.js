@@ -1,4 +1,5 @@
 let currentUserRole = 'admin';
+let currentLuxImageBase64 = null;
 
 // --- API CONFIGURATION ---
 const API_BASE = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -21,6 +22,12 @@ let analyticsSocket = null;
 let lastAnalyticsPayload = null;
 let currentAnalyticsBranch = 'All'
 let pendingHighlightItem = null;
+let currentOrderFilter = 'all';
+let aiSuggestedOrders = [];
+let currentProcurementTab = 'predictive';
+// Forecast horizon for LUX Prediction (in days)
+let currentPredictionHorizon = 30;
+
 
 // //////////////////////////////////////// //
 //      🔐 AUTH & ROLE MANAGEMENT            //
@@ -63,6 +70,12 @@ function applyRolePermissions() {
         if (mobileAdminMenu) mobileAdminMenu.classList.add('hidden');
         if (marketWidget) marketWidget.classList.add('hidden');
         if (reqBtn) reqBtn.classList.remove('hidden');
+
+        const addBranchBtn = document.querySelector('button[onclick*="openBranchModal"]');
+        if (addBranchBtn) addBranchBtn.remove();
+
+        const addSupplierBtn = document.querySelector('button[onclick*="openSupplierModal"]');
+        if (addSupplierBtn) addSupplierBtn.remove();
 
         const desktopSupplierBtn = document.querySelector('button[onclick*="showPage(\'suppliers\')"]');
         if (desktopSupplierBtn) desktopSupplierBtn.classList.add('hidden');
@@ -114,37 +127,39 @@ function lockBranchUI(branchName) {
 }
 
 
-// [main.js] - FIXED initDashboard (Solves "Active Branch KPI Syncing" issue)
 async function initDashboard() {
     console.log("Initializing Dashboard...");
- 
-    // FETCH INDEPENDENTLY (So one error doesn't kill the whole dashboard)
 
     // 1. Inventory Data
     fetch(API_URL)
         .then(r => r.json())
         .then(invRes => {
+            // Safety Check
+            if (!Array.isArray(invRes)) invRes = [];
+
             const totalValue = invRes.reduce((acc, item) => acc + ((item.price || 0) * (item.quantity || 0)), 0);
             const lowStockItems = invRes.filter(item => (item.quantity || 0) <= (item.reorder_level || 0));
 
-            document.getElementById('dash-total-value').textContent = `₱${totalValue.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
-            document.getElementById('dash-low-stock').textContent = lowStockItems.length;
+            const valEl = document.getElementById('dash-total-value');
+            if (valEl) valEl.textContent = `₱${totalValue.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
+
+            const lowEl = document.getElementById('dash-low-stock');
+            if (lowEl) lowEl.textContent = lowStockItems.length;
 
             // Render Charts
             if (typeof renderGradientBranchChart === 'function') renderGradientBranchChart(invRes);
             if (typeof renderCategoryDoughnut === 'function') renderCategoryDoughnut(invRes);
 
             // Render Restock Table
-            renderRestockTable(lowStockItems);
+            if (typeof renderRestockTable === 'function') renderRestockTable(lowStockItems);
         })
         .catch(e => console.error("Dash Inventory Error", e));
 
-    // 2. Branch Data (FIX FOR "SYNCING")
+    // 2. Branch Data
     fetch(BRANCHES_API_URL)
         .then(r => r.json())
         .then(branchRes => {
             const el = document.getElementById('dash-branches');
-            // Check if it's an array before checking length
             if (el && Array.isArray(branchRes)) {
                 el.textContent = branchRes.length;
             } else if (el) {
@@ -153,7 +168,8 @@ async function initDashboard() {
         })
         .catch(e => {
             console.error("Dash Branch Error", e);
-            document.getElementById('dash-branches').textContent = "-";
+            const el = document.getElementById('dash-branches');
+            if (el) el.textContent = "-";
         });
 
     // 3. AI Insights
@@ -165,35 +181,42 @@ async function initDashboard() {
         .catch(e => console.error("Dash AI Error", e));
 
     // 4. Update Time & Expiring
-    document.getElementById('dash-timestamp').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timeEl = document.getElementById('dash-timestamp');
+    if (timeEl) timeEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
     const expiringCount = window.bellState?.expiringItems?.length || 0;
     const expEl = document.getElementById('dash-expiring');
     if (expEl) expEl.textContent = expiringCount;
-     // 🔁 MIRROR EXPIRING COUNT INTO MOBILE MENU
-  const mmExp = document.getElementById('mm-expiring');
-  if (mmExp) mmExp.textContent = expiringCount;
+
+    const mmExp = document.getElementById('mm-expiring');
+    if (mmExp) mmExp.textContent = expiringCount;
+
+    // 5. ➤ FORCE LOAD LUX PREDICTION WIDGET
+    if (typeof switchProcurementTab === 'function') {
+        switchProcurementTab('predictive');
+    }
 }
 
 // Helper to render restock table (extracted for clarity)
 function renderRestockTable(lowStockItems) {
-  const restockTable = document.getElementById('dash-restock-table');
-  if (!restockTable) return;
+    const restockTable = document.getElementById('dash-restock-table');
+    if (!restockTable) return;
 
-  restockTable.innerHTML = '';
-  const criticalItems = lowStockItems
-    .sort((a, b) => ((a.quantity - a.reorder_level) - (b.quantity - b.reorder_level)))
-    .slice(0, 5);
+    restockTable.innerHTML = '';
+    const criticalItems = lowStockItems
+        .sort((a, b) => ((a.quantity - a.reorder_level) - (b.quantity - b.reorder_level)))
+        .slice(0, 5);
 
-  if (criticalItems.length === 0) {
-    restockTable.innerHTML = `<tr>
+    if (criticalItems.length === 0) {
+        restockTable.innerHTML = `<tr>
       <td colspan="3"
           class="px-6 py-8 text-center text-slate-400 text-xs font-medium">
         ✅ All stock levels healthy
       </td>
     </tr>`;
-  } else {
-    criticalItems.forEach(item => {
-      const row = `
+    } else {
+        criticalItems.forEach(item => {
+            const row = `
         <tr class="border-b border-slate-50 last:border-0 hover:bg-brand-50/50">
           <td class="px-4 md:px-6 py-3">
             <div class="font-bold text-slate-700 text-sm">${item.name}</div>
@@ -210,9 +233,9 @@ function renderRestockTable(lowStockItems) {
             </button>
           </td>
         </tr>`;
-      restockTable.innerHTML += row;
-    });
-  }
+            restockTable.innerHTML += row;
+        });
+    }
 }
 
 // ==========================================
@@ -275,7 +298,7 @@ function showPage(page) {
         'dashboard-section', 'inventory-section', 'branches-section',
         'orders-section', 'suppliers-section', 'compliance-section',
         'qr-section', 'admin-suppliers-section', 'admin-roles-section',
-        'admin-logs-section', 'admin-accounts-section', 'analytics-section', 'admin-settings-section'
+        'admin-logs-section', 'admin-accounts-section', 'analytics-section', 'admin-settings-section', 'finances-section'
     ];
 
     // Hide all sections
@@ -355,6 +378,10 @@ function showPage(page) {
 
     if (page === 'analytics' || page === 'dashboard') {
         fetchPriceInsights();
+    }
+
+    if (page === 'finances') {
+        fetchFinances();
     }
 }
 // Init on Load
@@ -873,9 +900,9 @@ function renderSharedBell() {
             alertBadge.classList.add('hidden');
         }
     }
-  // STEP 5B – MIRROR ALERT COUNT INTO MOBILE MENU (NEW)
-  const mmAlertCount = document.getElementById('mm-alert-count');
-  if (mmAlertCount) mmAlertCount.textContent = totalAlerts;
+    // STEP 5B – MIRROR ALERT COUNT INTO MOBILE MENU (NEW)
+    const mmAlertCount = document.getElementById('mm-alert-count');
+    if (mmAlertCount) mmAlertCount.textContent = totalAlerts;
 
     // 2. Prepare HTML Content
     const appendContent = (html) => {
@@ -1050,15 +1077,6 @@ function fetchBatchesForAlerts() {
         })
         .catch(err => console.error("Error fetching batches for alerts:", err));
 }
-
-fetch(`${API_BASE}/api/batches`)
-    .then(r => r.json())
-    .then(data => {
-        if (window.updateExpiryAndBell) {
-            window.updateExpiryAndBell(data);
-        }
-    })
-    .catch(err => console.error("Error fetching batches for alerts:", err));
 
 
 
@@ -1578,68 +1596,221 @@ function openRestockFromSupplier(supplierName) {
     }, 100); // Reduced delay for faster UI response
 }
 
+// //////////////////////////////////////// //
+//      📦 ENHANCED ORDERS LOGIC            //
+// //////////////////////////////////////// //
+
+function filterOrders(status) {
+    currentOrderFilter = status;
+
+    // Visual Update for Tabs
+    document.querySelectorAll('.order-filter-btn').forEach(btn => {
+        btn.classList.remove('bg-brand-50', 'text-brand-700', 'border-brand-200');
+        btn.classList.add('bg-white', 'text-slate-600', 'border-slate-200');
+
+        if (btn.textContent.toLowerCase().includes(status) || (status === 'all' && btn.textContent === 'All')) {
+            btn.classList.remove('bg-white', 'text-slate-600', 'border-slate-200');
+            btn.classList.add('bg-brand-50', 'text-brand-700', 'border-brand-200');
+        }
+    });
+
+    fetchOrders();
+}
+
 async function fetchOrders() {
     try {
-        const res = await fetch(ORDERS_API_URL);
-        if (res.ok) renderOrdersTable(await res.json());
-    } catch (e) { }
+        const res = await fetch(`${ORDERS_API_URL}`);
+        if (!res.ok) throw new Error("Failed to fetch orders");
+        const orders = await res.json();
+
+        const tbody = document.getElementById('ordersTableBody');
+        const searchVal = document.getElementById('orderSearch')?.value.toLowerCase() || "";
+        tbody.innerHTML = "";
+
+        let hasOrders = false;
+
+        orders.forEach(order => {
+            // 1. Client-Side Filtering
+            if (currentOrderFilter !== 'all' && order.status !== currentOrderFilter) return;
+            if (currentOrderFilter === 'received' && (order.status !== 'received' && order.status !== 'rejected')) return; // History tab
+
+            // Search Logic
+            const searchStr = `${order.item} ${order.branch} ${order.supplier}`.toLowerCase();
+            if (searchVal && !searchStr.includes(searchVal)) return;
+
+            hasOrders = true;
+
+            // 2. Status Badge Logic
+            let statusBadge = '';
+            let actionButtons = '';
+
+            switch (order.status) {
+                case 'pending':
+                    statusBadge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-50 text-amber-600 border border-amber-100"><i class="fas fa-clock"></i> Pending</span>`;
+
+                    // Admin Actions: Approve / Reject
+                    if (currentUserRole === 'owner' || currentUserRole === 'admin') {
+                        actionButtons = `
+                            <button onclick="updateOrderStatus('${order._id}', 'approved')" class="text-xs text-brand-600 hover:bg-brand-50 p-2 rounded-lg transition" title="Approve"><i class="fas fa-check"></i></button>
+                            <button onclick="updateOrderStatus('${order._id}', 'rejected')" class="text-xs text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition" title="Reject"><i class="fas fa-times"></i></button>
+                        `;
+                    } else {
+                        actionButtons = `<span class="text-[10px] text-slate-400 italic">Waiting approval</span>`;
+                    }
+                    break;
+
+                case 'approved':
+                    statusBadge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100"><i class="fas fa-thumbs-up"></i> Approved</span>`;
+
+                    // Staff Action: Mark Received
+                    // Admin can also mark received if needed
+                    actionButtons = `
+                        <button onclick="updateOrderStatus('${order._id}', 'received')" class="text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition">
+                           <i class="fas fa-box-open mr-1"></i> Receive Stock
+                        </button>
+                    `;
+                    break;
+
+                case 'received':
+                    statusBadge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-50 text-emerald-600 border border-emerald-100"><i class="fas fa-check-circle"></i> Received</span>`;
+                    actionButtons = `<span class="text-emerald-600 text-[10px] font-bold"><i class="fas fa-check"></i> Complete</span>`;
+                    break;
+
+                case 'rejected':
+                    statusBadge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-rose-50 text-rose-600 border border-rose-100"><i class="fas fa-ban"></i> Rejected</span>`;
+                    actionButtons = `<span class="text-slate-300 text-xs">-</span>`;
+                    break;
+            }
+
+            // 3. Render Row
+            const row = `
+                <tr class="hover:bg-slate-50/50 transition">
+                    <td class="px-6 py-4">
+                        <div class="font-bold text-brand-900">${order.item}</div>
+                        <div class="text-[10px] text-slate-400">ID: ${order._id.slice(-6)}</div>
+                    </td>
+                    <td class="px-6 py-4 text-xs font-bold text-slate-600">${order.branch}</td>
+                    <td class="px-6 py-4 font-black text-slate-800">${order.quantity}</td>
+                    <td class="px-6 py-4 text-xs text-slate-500">${order.supplier || 'N/A'}</td>
+                    <td class="px-6 py-4">${statusBadge}</td>
+                    <td class="px-6 py-4 text-right flex justify-end gap-2 items-center h-full">
+                        ${actionButtons}
+                    </td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+
+        // Toggle Empty State
+        const emptyState = document.getElementById('ordersEmptyState');
+        if (!hasOrders) {
+            emptyState.classList.remove('hidden');
+        } else {
+            emptyState.classList.add('hidden');
+        }
+
+    } catch (err) {
+        console.error("Error fetching orders:", err);
+    }
 }
 
 
-// //////////////////////////////////////// //
-//      THEMED & ALIGNED ORDERS RENDERER     //
-// //////////////////////////////////////// //
-// [main.js] - Ensure this function handles the UI correctly
-function renderOrdersTable(orders) {
-    const tbody = document.getElementById('ordersTableBody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
+// ➤ AI APPROVE ALL (No "Localhost" Popup)
+async function confirmAiOrders() {
+    // 1. SHOW OVERLAY
+    showOverlay("Creating your orders...");
+    closeAiRestockModal(); // Hide modal so we only see the overlay
 
-    if (!orders || orders.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-10 text-slate-400 text-xs">No active orders found.</td></tr>`;
-        return;
+    let count = 0;
+
+    // 2. Process Orders
+    for (let i = 0; i < aiSuggestedOrders.length; i++) {
+        const rec = aiSuggestedOrders[i];
+        if (!rec) continue;
+
+        const inputEl = document.getElementById(`ai-qty-${i}`);
+        const qtyToOrder = inputEl ? inputEl.value : rec.quantity;
+
+        try {
+            await fetch(`${API_BASE}/api/orders`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    item: rec.item,
+                    branch: rec.branch,
+                    quantity: parseInt(qtyToOrder),
+                    supplier: "LUX Auto-Restock",
+                    status: "pending"
+                })
+            });
+            count++;
+        } catch (err) {
+            console.error("Failed", rec.item);
+        }
     }
 
-    orders.forEach(o => {
-        // Status Badge logic
-        const isPending = o.status === 'pending';
-        const badge = isPending
-            ? `<span class="px-2 py-0.5 rounded-md bg-amber-50 text-amber-600 text-[10px] font-bold border border-amber-100">Pending</span>`
-            : `<span class="px-2 py-0.5 rounded-md bg-emerald-50 text-brand-600 text-[10px] font-bold border border-brand-100">Received</span>`;
+    // 3. Refresh Data
+    await fetchOrders();
 
-        const dateStr = o.created_at ? new Date(o.created_at).toLocaleDateString() : '-';
-        const isNewItemReq = o.notes && o.notes.includes("[NEW ITEM REQUEST]");
-        const itemDisplay = isNewItemReq
-            ? `<div class="font-bold text-slate-800 text-sm">${o.item} <span class="bg-brand-600 text-white text-[9px] px-1.5 py-0.5 rounded ml-1 uppercase tracking-wider font-bold shadow-sm">New Item</span></div>`
-            : `<div class="font-bold text-slate-700 text-sm leading-tight">${o.item}</div>`;
-        // Action Button: Only Admins can usually "Receive". Staff just see status.
-        // We can simply show the status for now.
-        let actionBtn = '';
-        if (isPending) {
-            // If Admin/Owner, show Receive. If Staff, show "Waiting"
-            if (currentUser.role === 'staff') {
-                actionBtn = `<span class="text-slate-400 text-[10px] italic">Awaiting Approval</span>`;
-            } else {
-                actionBtn = `<button onclick="showToast('Feature coming soon')" 
-                         class="bg-brand-600 hover:bg-brand-900 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold transition shadow-sm">Receive</button>`;
-            }
-        } else {
-            actionBtn = `<span class="text-emerald-600 font-bold text-[10px] flex items-center justify-center gap-1"><i class="fas fa-check-circle"></i> Complete</span>`;
+    // 4. SHOW SUCCESS ON OVERLAY (Instead of Alert)
+    const overlayText = document.getElementById('globalLoadingText');
+    const overlayIcon = document.querySelector('#globalLoadingOverlay i');
+
+    if (overlayText) overlayText.innerText = `Success! ${count} orders created.`;
+    if (overlayIcon) {
+        overlayIcon.className = "fas fa-check-circle text-5xl text-emerald-500 mb-5 animate-bounce";
+    }
+
+    // 5. Hide after 1.5 seconds
+    setTimeout(() => {
+        hideOverlay();
+        // Reset Icon for next time
+        if (overlayIcon) overlayIcon.className = "fas fa-circle-notch fa-spin text-5xl text-brand-600 mb-5";
+    }, 1500);
+}
+
+// ➤ ACTION HANDLER (No "Localhost" Popup)
+async function updateOrderStatus(orderId, newStatus) {
+    // 1. Remove the browser confirmation
+    // if (!confirm(...)) return;  <-- DELETED THIS LINE
+
+    // 2. SHOW OVERLAY IMMEDIATELY
+    showOverlay(`Marking as ${newStatus}...`);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/orders/${orderId}/status`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            // Update Overlay to show Error
+            document.getElementById('globalLoadingText').innerText = "Error!";
+            alert(data.error || "Action failed");
+            hideOverlay();
+            return;
         }
 
-        tbody.innerHTML += `
-        <tr class="hover:bg-brand-50/20 transition border-b border-slate-50 last:border-0">
-            <td class="px-6 py-4 font-mono text-[10px] text-slate-400">#PO-${(o._id || o.id || '???').slice(-4)}</td>
-            <td class="px-6 py-4">
-                <div class="font-bold text-slate-700 text-sm leading-tight">${o.item}</div>
-                <div class="text-[10px] text-slate-400">Qty: ${o.quantity}</div>
-            </td>
-            <td class="px-6 py-4 text-xs text-slate-500 font-medium">${o.branch}</td>
-            <td class="px-6 py-4 text-center">${badge}</td>
-            <td class="px-6 py-4 text-xs text-slate-500 font-medium">${dateStr}</td>
-            <td class="px-6 py-4 text-center">${actionBtn}</td>
-        </tr>`;
-    });
+        // Success - Refresh list
+        await fetchOrders();
+
+        // If received, refresh inventory
+        if (newStatus === 'received') {
+            fetchInventory();
+            if (typeof fetchComplianceData === 'function') fetchComplianceData();
+        }
+
+    } catch (err) {
+        console.error("Update Status Error:", err);
+    } finally {
+        // 3. SHORT DELAY BEFORE HIDING (So user sees the spinner)
+        setTimeout(() => {
+            hideOverlay();
+        }, 500);
+    }
 }
 // ==========================================
 // 9. BRANCHES MANAGEMENT (FIXED)
@@ -1947,82 +2118,51 @@ function hideSplashScreen() {
         }, 700);
     }
 }
-// AUTO REPLENISHMENT RECOMMENDATIONS (FRONTEND)
 async function fetchReplenishmentRecommendations(isDashboard = false) {
-  const containerId = isDashboard ? 'dash-auto-replenish-list' : 'auto-replenish-list';
-  const container = document.getElementById(containerId);
-  if (!container) return;
+    const container = document.getElementById('procurement-content');
+    if (!container) return;
 
-  container.innerHTML = `
-    <div class="py-6 text-center text-xs text-slate-400">
-      <i class="fas fa-circle-notch fa-spin mr-2 text-brand-600"></i>
-      Calculating recommended replenishments...
-    </div>
-  `;
+    if (isDashboard && currentProcurementTab !== 'replenish') return;
 
-  try {
-    const res = await fetch(REPLENISH_API_URL, {
-      credentials: 'include'
-    });
-    if (!res.ok) throw new Error('Failed to load recommendations');
+    // Loading Spinner (Wine Color)
+    container.innerHTML = `<div class="flex flex-col items-center justify-center h-48"><i class="fas fa-circle-notch fa-spin text-2xl text-brand-600"></i></div>`;
 
-    const data = await res.json();
+    try {
+        const res = await fetch(`${API_BASE}/api/replenishment/recommendations`, { credentials: 'include' });
+        const data = await res.json();
 
-    if (!Array.isArray(data) || data.length === 0) {
-      container.innerHTML = `
-        <div class="py-6 text-center text-xs text-slate-400">
-          No items need replenishment based on current rules.
-        </div>
-      `;
-      return;
+        if (!Array.isArray(data) || data.length === 0) {
+            container.innerHTML = `<div class="flex flex-col items-center justify-center h-40 text-slate-400 gap-2"><i class="fas fa-clipboard-check text-2xl text-brand-200"></i><span class="text-xs">All rules satisfied.</span></div>`;
+            return;
+        }
+
+        let html = '';
+        data.slice(0, 5).forEach(item => {
+            html += `
+            <div class="flex items-center justify-between p-3 rounded-2xl border border-slate-100 bg-white hover:border-brand-200 hover:shadow-sm transition-all">
+                <div class="flex items-center gap-3">
+                    <div class="h-10 w-10 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center text-lg font-bold border border-brand-100">
+                        <i class="fas fa-box"></i>
+                    </div>
+                    <div>
+                        <h4 class="font-bold text-slate-800 text-sm">${item.name}</h4>
+                        <div class="text-[10px] text-slate-500 mt-0.5">
+                            Hit Reorder Point (<b>${item.reorder_point}</b>)
+                        </div>
+                    </div>
+                </div>
+                
+                <button onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.current_quantity})" 
+                    class="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-[10px] font-bold shadow-md hover:bg-brand-700 transition flex items-center gap-1">
+                    <i class="fas fa-plus"></i> Restock ${item.suggested_order_qty}
+                </button>
+            </div>`;
+        });
+        container.innerHTML = html;
+
+    } catch (err) {
+        console.error(err);
     }
-
-    let html = '';
-    data.slice(0, isDashboard ? 5 : 20).forEach(item => {
-      const name = item.name || 'Unknown';
-      const branch = item.branch || 'Main';
-      const currentQty = item.current_quantity ?? 0;
-      const reorderPoint = item.reorder_point ?? 0;
-      const suggested = item.suggested_order_qty ?? 0;
-
-      html += `
-        <div class="flex items-start justify-between py-2.5 border-b border-slate-100 last:border-0">
-          <div class="flex flex-col">
-            <span class="text-[13px] font-semibold text-slate-800">
-              ${name}
-            </span>
-            <span class="text-[10px] text-slate-400 font-medium">
-              ${branch}
-            </span>
-            <span class="mt-1 text-[11px] text-slate-500">
-              Stock: <span class="font-semibold">${currentQty}</span>
-              • Reorder point: <span class="font-semibold">${reorderPoint}</span>
-            </span>
-            <span class="text-[11px] text-slate-500">
-              Suggested order: <span class="font-semibold">${suggested}</span>
-            </span>
-          </div>
-          <div class="flex flex-col items-end gap-1">
-            <button
-              onclick="openRestockModal('${name.replace(/'/g, "\\'")}', '${branch}', ${currentQty})"
-              class="mt-1 px-2.5 py-1 rounded-lg bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white
-                     text-[10px] font-bold transition">
-              Restock: ${suggested}
-            </button>
-          </div>
-        </div>
-      `;
-    });
-
-    container.innerHTML = html;
-  } catch (err) {
-    console.error(err);
-    container.innerHTML = `
-      <div class="py-6 text-center text-xs text-rose-500">
-        Error loading replenishment suggestions. Please try again.
-      </div>
-    `;
-  }
 }
 
 
@@ -2259,33 +2399,74 @@ function switchAnalyticsBranch(branchName) {
     fetchAnalyticsCharts(branchName);
 }
 
-// Updated Chart Fetcher to accept Branch Name
-async function fetchAnalyticsCharts(branchName = 'All') {
-    try {
-        console.log(`Fetching charts for: ${branchName}`);
+// //////////////////////////////////////// //
+//      ANALYTICS CHARTS (FIXED)            //
+// //////////////////////////////////////// //
 
-        // Pass branch parameter to API
-        const [weeklyRes, monthlyRes] = await Promise.all([
-            fetch(`${API_BASE}/analytics/movement?branch=${encodeURIComponent(branchName)}`),
-            fetch(`${API_BASE}/analytics/movement-monthly?branch=${encodeURIComponent(branchName)}`)
-        ]);
+function toggleAnalyticsView() {
+    const range = document.getElementById('analytics-time-range').value;
+    const yearSelect = document.getElementById('analytics-year-select');
 
-        const weeklyData = await weeklyRes.json();
-        const monthlyData = await monthlyRes.json();
-
-        const payload = {
-            movement: weeklyData,
-            movement_monthly: monthlyData
-        };
-
-        lastAnalyticsPayload = payload;
-        drawAnalytics(payload);
-
-    } catch (err) {
-        console.error("Failed to load charts:", err);
+    // Show Year Selector ONLY if "Monthly" is selected
+    if (range === 'monthly') {
+        yearSelect.classList.remove('hidden');
+    } else {
+        yearSelect.classList.add('hidden');
     }
+
+    fetchAnalyticsCharts();
 }
 
+// //////////////////////////////////////// //
+//      ANALYTICS FETCH LOGIC (FIXED)       //
+// //////////////////////////////////////// //
+
+async function fetchAnalyticsCharts() {
+    try {
+        const timeRangeEl = document.getElementById('analytics-time-range');
+        const yearSelectEl = document.getElementById('analytics-year-select');
+
+        // Safety Check
+        if (!timeRangeEl || !yearSelectEl) return;
+
+        const timeRange = timeRangeEl.value;
+        const selectedYear = yearSelectEl.value;
+
+        // Determine URL
+        let url = `${API_BASE}/analytics/movement`; // Default
+        if (timeRange === 'monthly') {
+            url = `${API_BASE}/analytics/movement-monthly?year=${selectedYear}`;
+        }
+
+        // Add Branch Filter
+        if (currentAnalyticsBranch !== 'All') {
+            const separator = url.includes('?') ? '&' : '?';
+            url += `${separator}branch=${encodeURIComponent(currentAnalyticsBranch)}`;
+        }
+
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch analytics");
+
+        // 1. Get the data
+        const data = await res.json();
+
+        // 2. Normalize the data structure
+        // The API returns {labels, stock_in, stock_out} directly, 
+        // but drawAnalytics expects it inside a 'movement' or 'movement_monthly' key
+        let formattedPayload = {};
+        if (timeRange === 'monthly') {
+            formattedPayload = { movement_monthly: data };
+        } else {
+            formattedPayload = { movement: data };
+        }
+
+        // 3. Let drawAnalytics handle the colors and rendering
+        drawAnalytics(formattedPayload);
+
+    } catch (err) {
+        console.error("Chart Fetch Error:", err);
+    }
+}
 // 2. Fetch Lists (Low Stock & Top Products)
 function fetchAnalyticsLists() {
     // Low Stock Table
@@ -2367,35 +2548,7 @@ function fetchAnalyticsLists() {
         });
 }
 
-async function fetchAnalyticsCharts(branchName = 'All') { // Accept parameter
-    try {
-        console.log(`Fetching chart data for: ${branchName}...`);
 
-        // Pass the branch to the API
-        const [weeklyRes, monthlyRes] = await Promise.all([
-            fetch(`${API_BASE}/analytics/movement?branch=${encodeURIComponent(branchName)}`),
-            fetch(`${API_BASE}/analytics/movement-monthly?branch=${encodeURIComponent(branchName)}`)
-        ]);
-
-        const weeklyData = await weeklyRes.json();
-        const monthlyData = await monthlyRes.json();
-
-        const payload = {
-            movement: weeklyData,
-            movement_monthly: monthlyData
-        };
-
-        lastAnalyticsPayload = payload;
-        drawAnalytics(payload);
-
-    } catch (err) {
-        console.error("Failed to load charts:", err);
-    }
-}
-
-// //////////////////////////////////////// //
-//      ✨ UPDATED: GRADIENT ANALYTICS RENDERER //
-// //////////////////////////////////////// //
 function drawAnalytics(payload) {
     const section = document.getElementById('analytics-section');
     if (!section || section.classList.contains('hidden')) {
@@ -2403,13 +2556,24 @@ function drawAnalytics(payload) {
         return;
     }
 
-    const lineCanvas = document.getElementById('analytics-main-chart');
+    const lineCanvas = document.getElementById('analyticsMainChart');
     const barCanvas = document.getElementById('stockInOutChart');
 
     if (!lineCanvas || !barCanvas) return;
 
+    // Handle data whether it comes from API (direct) or Socket (nested)
     const weekly = payload.movement || { labels: [], stock_in: [], stock_out: [] };
-    const monthly = payload.movement_monthly || weekly;
+    const monthly = payload.movement_monthly || weekly; // Fallback
+
+    // ➤ CRITICAL: THIS CONTROLS THE COLORS
+    const colorWine = '#5E4074';
+    const colorRed = '#DC2626';
+
+    // Detect which data to show based on the dropdown
+    const timeRangeEl = document.getElementById('analytics-time-range');
+    const isMonthly = timeRangeEl && timeRangeEl.value === 'monthly';
+
+    const dataToShow = isMonthly ? monthly : weekly;
 
     // A. Big Chart (Line)
     const lineCtx = lineCanvas.getContext('2d');
@@ -2418,48 +2582,46 @@ function drawAnalytics(payload) {
     analyticsMainChart = new Chart(lineCtx, {
         type: 'line',
         data: {
-            labels: monthly.labels || [],
+            labels: dataToShow.labels || [],
             datasets: [
                 {
                     label: 'Stock In',
-                    data: monthly.stock_in || [],
-                    borderColor: '#5E4074', // Plume Wine
+                    data: dataToShow.stock_in || [],
+                    borderColor: colorWine,
                     borderWidth: 3,
                     pointBackgroundColor: '#fff',
-                    pointBorderColor: '#5E4074',
+                    pointBorderColor: colorWine,
                     pointHoverRadius: 6,
                     fill: true,
-                    // ➤ ADDED: Dynamic Gradient Logic
                     backgroundColor: function (context) {
                         const chart = context.chart;
                         const { ctx, chartArea } = chart;
                         if (!chartArea) return null;
                         const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
-                        gradient.addColorStop(0, 'rgba(94, 64, 116, 0.05)');  // Light Wine
-                        gradient.addColorStop(0.5, 'rgba(94, 64, 116, 0.4)'); // Mid Wine
-                        gradient.addColorStop(1, 'rgba(94, 64, 116, 0.8)');   // Deep Plume Wine
+                        gradient.addColorStop(0, 'rgba(94, 64, 116, 0.05)');
+                        gradient.addColorStop(1, 'rgba(94, 64, 116, 0.5)');
                         return gradient;
                     },
                     tension: 0.4
                 },
                 {
                     label: 'Stock Out',
-                    data: monthly.stock_out || [],
-                    borderColor: '#f43f5e', // Rose Red
+                    data: dataToShow.stock_out || [],
+                    borderColor: colorRed,
                     borderWidth: 3,
                     backgroundColor: function (context) {
                         const chart = context.chart;
                         const { ctx, chartArea } = chart;
                         if (!chartArea) return null;
                         const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
-                        gradient.addColorStop(0, 'rgba(244, 63, 94, 0.05)');
-                        gradient.addColorStop(1, 'rgba(244, 63, 94, 0.6)');
+                        gradient.addColorStop(0, 'rgba(220, 38, 38, 0.05)');
+                        gradient.addColorStop(1, 'rgba(220, 38, 38, 0.5)');
                         return gradient;
                     },
                     tension: 0.4,
                     fill: true,
                     pointBackgroundColor: '#fff',
-                    pointBorderColor: '#f43f5e',
+                    pointBorderColor: colorRed,
                     pointRadius: 4
                 }
             ]
@@ -2469,30 +2631,16 @@ function drawAnalytics(payload) {
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: 'rgba(37, 23, 48, 0.9)', // Deep Wine Tooltip
-                    padding: 12,
-                    cornerRadius: 12,
-                    titleFont: { size: 13, weight: 'bold' },
-                    bodyFont: { size: 12 }
-                }
+                legend: { display: true, position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 8, font: { weight: 'bold', size: 11 } } },
             },
             scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: { color: 'rgba(0,0,0,0.03)', borderDash: [5, 5] },
-                    ticks: { color: '#94a3b8', font: { size: 10 } }
-                },
-                x: {
-                    grid: { display: false },
-                    ticks: { color: '#94a3b8', font: { size: 10 } }
-                }
+                y: { beginAtZero: true, grid: { color: '#f1f5f9', borderDash: [5, 5] }, ticks: { font: { size: 10, weight: 'bold' } } },
+                x: { grid: { display: false }, ticks: { font: { size: 11, weight: 'bold' } } }
             }
         }
     });
 
-    // B. Small Chart (Weekly Bar)
+    // B. Small Chart (Bar - Always shows weekly snapshot)
     const barCtx = barCanvas.getContext('2d');
     if (stockInOutChart) { stockInOutChart.destroy(); stockInOutChart = null; }
 
@@ -2504,16 +2652,16 @@ function drawAnalytics(payload) {
                 {
                     label: 'In',
                     data: weekly.stock_in || [],
-                    backgroundColor: '#5E4074', // Changed from emerald to Plume Wine
-                    borderRadius: 6,
-                    barPercentage: 0.6
+                    backgroundColor: colorWine,
+                    borderRadius: 4,
+                    barPercentage: 0.5
                 },
                 {
                     label: 'Out',
                     data: weekly.stock_out || [],
-                    backgroundColor: '#f43f5e',
-                    borderRadius: 6,
-                    barPercentage: 0.6
+                    backgroundColor: colorRed,
+                    borderRadius: 4,
+                    barPercentage: 0.5
                 }
             ]
         },
@@ -2523,24 +2671,36 @@ function drawAnalytics(payload) {
             plugins: { legend: { display: false } },
             scales: {
                 y: { display: false, beginAtZero: true },
-                x: { grid: { display: false }, ticks: { font: { size: 9 }, color: '#94a3b8' } }
+                x: { grid: { display: false }, ticks: { font: { size: 9, weight: 'bold' }, color: '#94a3b8' } }
             }
         }
     });
 }
 
-// 5. Interactive Buttons for Chart
+// 5. Interactive Buttons for Chart (IN / OUT)
 function toggleMainChartDataset(datasetIndex) {
     if (!analyticsMainChart) return;
+
+    // Toggle Visibility
     const isVisible = analyticsMainChart.isDatasetVisible(datasetIndex);
     if (isVisible) {
         analyticsMainChart.hide(datasetIndex);
+
+        // Visual Feedback: Fade the button
         const btn = document.getElementById(`legend-btn-${datasetIndex}`);
-        if (btn) btn.classList.add('opacity-50', 'grayscale');
+        if (btn) {
+            btn.classList.add('opacity-50', 'grayscale');
+            btn.classList.remove('shadow-sm');
+        }
     } else {
         analyticsMainChart.show(datasetIndex);
+
+        // Visual Feedback: Restore button
         const btn = document.getElementById(`legend-btn-${datasetIndex}`);
-        if (btn) btn.classList.remove('opacity-50', 'grayscale');
+        if (btn) {
+            btn.classList.remove('opacity-50', 'grayscale');
+            btn.classList.add('shadow-sm');
+        }
     }
 }
 
@@ -2838,86 +2998,123 @@ async function executeDelete() {
         closeDeleteModal();
     }
 }
-// AI PREDICTIVE RESTOCKING (FRONTEND)
+
+
 async function fetchPredictiveRestock(isDashboard = false) {
-  const containerId = isDashboard ? 'dash-ai-restock-list' : 'ai-restock-list';
-  const container = document.getElementById(containerId);
-  if (!container) return;
+    const container = document.getElementById("procurement-content");
+    if (!container) return;
 
-  container.innerHTML = `
-    <div class="py-6 text-center text-xs text-slate-400">
-      <i class="fas fa-circle-notch fa-spin mr-2 text-brand-600"></i>
-      Analyzing consumption patterns...
-    </div>
-  `;
-
-  try {
-    const res = await fetch(`${API_BASE}/api/ai/predict-restock`, {
-      credentials: 'include'
-    });
-    if (!res.ok) throw new Error('Failed to load predictions');
-    const data = await res.json();
-
-    if (!Array.isArray(data) || data.length === 0) {
-      container.innerHTML = `
-        <div class="py-6 text-center text-xs text-slate-400">
-          No predictive restock signals yet.
-        </div>
-      `;
-      return;
+    // Loading state
+    if (isDashboard) {
+        container.innerHTML = `
+            <div class="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
+                <i class="fas fa-circle-notch fa-spin text-2xl text-brand-600"></i>
+                <span class="text-xs">LUX is scanning stock velocity...</span>
+            </div>
+        `;
     }
 
-    let html = '';
-    data.slice(0, isDashboard ? 5 : 10).forEach(item => {
-      const days = item.days_until_out !== null
-        ? `${item.days_until_out} days`
-        : 'No recent usage';
-      const riskBadge = item.days_until_out !== null && item.days_until_out <= 30
-        ? 'bg-rose-50 text-rose-600 border border-rose-200'
-        : 'bg-emerald-50 text-emerald-600 border border-emerald-200';
+    try {
+        const url = `${API_BASE}/api/ai/predict-restock?days=${encodeURIComponent(
+            currentPredictionHorizon
+        )}`;
+        const res = await fetch(url, { credentials: "include" });
+        if (!res.ok) throw new Error("Failed to load predictive data");
+        const data = await res.json();
 
-      html += `
-        <div class="flex items-start justify-between py-2.5 border-b border-slate-100 last:border-0">
-          <div class="flex flex-col">
-            <span class="text-[13px] font-semibold text-slate-800">
-              ${item.name}
-            </span>
-            <span class="text-[10px] text-slate-400 font-medium">
-              ${item.branch}
-            </span>
-            <span class="mt-1 text-[11px] text-slate-500">
-              Stock: <span class="font-semibold">${item.current_stock}</span>
-              • Reorder lvl: <span class="font-semibold">${item.reorder_level}</span>
-            </span>
-            <span class="text-[11px] text-slate-500">
-              Avg daily usage: <span class="font-semibold">${item.avg_daily_usage}</span>
-            </span>
-          </div>
-          <div class="flex flex-col items-end gap-1">
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${riskBadge}">
-              ${days}
-            </span>
-            <button
-              onclick="openRestockModal('${item.name.replace(/'/g, "\\'")}', '${item.branch}', ${item.current_stock})"
-              class="mt-1 px-2.5 py-1 rounded-lg bg-brand-50 text-brand-600 hover:bg-brand-600 hover:text-white
-                     text-[10px] font-bold transition">
-              Restock: ${item.recommended_order}
-            </button>
-          </div>
-        </div>
-      `;
-    });
+        if (!Array.isArray(data) || data.length === 0) {
+            container.innerHTML = `
+                <div class="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
+                    <i class="fas fa-clipboard-check text-2xl text-brand-200"></i>
+                    <span class="text-xs">No forecasted stockouts within ${currentPredictionHorizon} days.</span>
+                </div>
+            `;
+            return;
+        }
 
-    container.innerHTML = html;
-  } catch (err) {
-    console.error(err);
-    container.innerHTML = `
-      <div class="py-6 text-center text-xs text-rose-500">
-        Error loading predictive restocking. Please try again.
-      </div>
-    `;
-  }
+        let html = "";
+        data.slice(0, 10).forEach((item) => {
+            const riskLevel = item.risk_level || "Low";
+            const riskScore = item.risk_score ?? 0;
+            const daysLeft = item.daysuntilout;
+            const qty = item.currentstock ?? 0;
+            const reorder = item.reorderlevel ?? 0;
+            const suggested = item.recommendedorder ?? 0;
+
+            let riskColor =
+                "bg-emerald-50 text-emerald-700 border border-emerald-100";
+            if (riskLevel === "Critical") {
+                riskColor = "bg-rose-50 text-rose-700 border border-rose-200";
+            } else if (riskLevel === "High") {
+                riskColor = "bg-amber-50 text-amber-700 border border-amber-200";
+            } else if (riskLevel === "Medium") {
+                riskColor = "bg-sky-50 text-sky-700 border border-sky-200";
+            }
+
+            const daysText =
+                daysLeft <= 0
+                    ? "Out of stock"
+                    : daysLeft === currentPredictionHorizon + 1
+                    ? `> ${currentPredictionHorizon} days`
+                    : `${daysLeft} days`;
+
+            html += `
+                <div class="flex items-center justify-between p-3 rounded-2xl border border-slate-100 bg-white hover:border-brand-200 hover:shadow-sm transition-all mb-2">
+                    <div class="flex items-center gap-3">
+                        <div class="h-10 w-10 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center text-lg font-bold border border-brand-100">
+                            <i class="fas fa-box"></i>
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-slate-800 text-sm">${item.name}</h4>
+                            <div class="flex items-center gap-2 mt-0.5">
+                                <span class="text-[10px] font-bold text-slate-500 uppercase px-2 py-0.5 rounded-full bg-slate-50 border border-slate-100">
+                                    ${item.branch || "General"}
+                                </span>
+                                <span class="text-[10px] font-mono text-slate-400">
+                                    Stock: <span class="font-bold text-slate-700">${qty}</span> • Reorder: <span class="font-bold">${reorder}</span>
+                                </span>
+                            </div>
+                            <div class="mt-1 text-[10px] text-slate-500">
+                                Forecast: <span class="font-bold text-slate-700">${daysText}</span> until depletion at current usage.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex flex-col items-end gap-1">
+                        <div class="${riskColor} text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <span>${riskLevel}</span>
+                            <span class="text-[9px] opacity-80">(${riskScore})</span>
+                        </div>
+                        <div class="text-[10px] text-slate-500">
+                            Suggest order: <span class="font-extrabold text-brand-700">${suggested}</span> units
+                        </div>
+                        <button
+                            onclick="openRestockModal('${(item.name || "").replace(
+                                /'/g,
+                                "\\'"
+                            )}', '${(item.branch || "General").replace(
+                /'/g,
+                "\\'"
+            )}', ${qty})"
+                            class="mt-1 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-[10px] font-bold shadow-sm hover:bg-brand-700 transition flex items-center gap-1">
+                            <i class="fas fa-plus"></i> Order
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+
+        container.innerHTML = html;
+    } catch (err) {
+        console.error(err);
+        container.innerHTML = `
+            <div class="flex flex-col items-center justify-center h-40 text-rose-500 gap-2">
+                <i class="fas fa-triangle-exclamation text-2xl"></i>
+                <span class="text-xs font-bold">Failed to load predictive forecast.</span>
+            </div>
+        `;
+    }
 }
+
 
 // ==========================================
 // 14. COMPLIANCE PAGE LOGIC
@@ -3363,9 +3560,9 @@ function fetchRoleStats() {
             });
 
             // Animate Numbers (Simple increment effect)
-            animateValue("count-owner", 0, counts.owner, 1000);
-            animateValue("count-admin", 0, counts.admin, 1000);
-            animateValue("count-staff", 0, counts.staff, 1000);
+            document.getElementById("count-owner").textContent = counts.owner;
+            document.getElementById("count-admin").textContent = counts.admin;
+            document.getElementById("count-staff").textContent = counts.staff;
         })
         .catch(err => console.error("Role stats error:", err));
 }
@@ -3962,4 +4159,362 @@ async function fetchPriceInsights() {
         console.error("Market Insight Error:", err);
         if (summaryEl) summaryEl.innerHTML = "LUX is currently calculating trends...";
     }
+}
+
+// //////////////////////////////////////// //
+//      👁️ PASSWORD VISIBILITY TOGGLE       //
+// //////////////////////////////////////// //
+
+function toggleUserPassword() {
+    const passInput = document.getElementById('userPassword');
+    const passIcon = document.getElementById('userPassIcon');
+
+    if (!passInput || !passIcon) return;
+
+    if (passInput.type === 'password') {
+        passInput.type = 'text';
+        passIcon.classList.remove('fa-eye');
+        passIcon.classList.add('fa-eye-slash');
+        passIcon.classList.add('text-brand-600'); // Optional: Highlight color
+    } else {
+        passInput.type = 'password';
+        passIcon.classList.remove('fa-eye-slash');
+        passIcon.classList.add('fa-eye');
+        passIcon.classList.remove('text-brand-600');
+    }
+}
+
+async function openAiRestockModal() {
+    const modal = document.getElementById('aiRestockModal');
+    const tbody = document.getElementById('aiRestockTableBody');
+    const btn = document.getElementById('confirmAiBtn');
+
+    modal.classList.remove('hidden');
+    // ➤ CHANGED: Loading Spinner is now Brand Wine
+    tbody.innerHTML = `<tr><td colspan="5" class="text-center py-10"><i class="fas fa-circle-notch fa-spin text-brand-600 text-2xl"></i><p class="mt-2 text-brand-800 font-bold">LUX is analyzing stock levels...</p></td></tr>`;
+    btn.disabled = true;
+    btn.classList.add('opacity-50');
+
+    try {
+        const res = await fetch(`${API_BASE}/api/ai/generate-restock-plan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error);
+        if (!data.recommendations || data.recommendations.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center py-8 text-slate-500 font-bold">✅ Inventory is healthy. LUX found no issues.</td></tr>`;
+            return;
+        }
+
+        aiSuggestedOrders = data.recommendations;
+        tbody.innerHTML = '';
+
+        aiSuggestedOrders.forEach((rec, index) => {
+            // ➤ CHANGED: Hover color and Text colors to match Plume Wine theme
+            const row = `
+                <tr id="ai-row-${index}" class="hover:bg-brand-50/50 transition">
+                    <td class="p-3 font-bold text-slate-800">${rec.item}</td>
+                    <td class="p-3 text-slate-600">${rec.branch}</td>
+                    <td class="p-3">
+                        <input type="number" id="ai-qty-${index}" value="${rec.quantity}" class="w-16 p-1 border border-brand-100 rounded text-center font-bold focus:border-brand-600 outline-none text-brand-900">
+                    </td>
+                    <td class="p-3 text-brand-600 font-bold text-[10px] uppercase">${rec.reason}</td>
+                    <td class="p-3 text-center">
+                        <button onclick="removeAiRow(${index})" class="text-rose-400 hover:text-rose-600"><i class="fas fa-trash"></i></button>
+                    </td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+
+        btn.disabled = false;
+        btn.classList.remove('opacity-50');
+
+    } catch (err) {
+        console.error("LUX Error:", err);
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center py-8 text-rose-500 font-bold">❌ ${err.message || "LUX Analysis Failed"}</td></tr>`;
+    }
+}
+
+function closeAiRestockModal() {
+    document.getElementById('aiRestockModal').classList.add('hidden');
+}
+
+function removeAiRow(index) {
+    // Just visually hide and mark as null so we don't process it
+    document.getElementById(`ai-row-${index}`).remove();
+    aiSuggestedOrders[index] = null;
+}
+
+// //////////////////////////////////////// //
+//      💎 CONFIRM AI ORDERS (FIXED)        //
+// //////////////////////////////////////// //
+
+async function confirmAiOrders() {
+    // 1. Force Global Overlay
+    showOverlay("Creating your orders...");
+
+    // Hide the modal immediately so the Overlay is the only thing visible
+    closeAiRestockModal();
+
+    let count = 0;
+
+    // 2. Process Orders Loop
+    for (let i = 0; i < aiSuggestedOrders.length; i++) {
+        const rec = aiSuggestedOrders[i];
+        if (!rec) continue;
+
+        // Get value from input in case user changed it
+        const inputEl = document.getElementById(`ai-qty-${i}`);
+        const qtyToOrder = inputEl ? inputEl.value : rec.quantity;
+
+        try {
+            await fetch(`${API_BASE}/api/orders`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    item: rec.item,
+                    branch: rec.branch,
+                    quantity: parseInt(qtyToOrder),
+                    supplier: "LUX Auto-Restock",
+                    status: "pending"
+                })
+            });
+            count++;
+        } catch (err) {
+            console.error("Order failed for", rec.item);
+        }
+    }
+
+    // 3. Refresh Data
+    await fetchOrders();
+
+    // 4. Hide Overlay
+    hideOverlay();
+
+    // 5. Success Message
+    alert(`🎉 Success! ${count} orders created.`);
+}
+
+// //////////////////////////////////////// //
+//      🔄 GLOBAL OVERLAY HELPERS           //
+// //////////////////////////////////////// //
+
+function showOverlay(message = "Processing...") {
+    const overlay = document.getElementById('globalLoadingOverlay');
+    const text = document.getElementById('globalLoadingText');
+    if (overlay && text) {
+        text.innerText = message;
+        overlay.classList.remove('hidden');
+        // Small fade-in animation logic if desired
+        setTimeout(() => overlay.classList.add('opacity-100'), 10);
+    }
+}
+
+function hideOverlay() {
+    const overlay = document.getElementById('globalLoadingOverlay');
+    if (overlay) {
+        overlay.classList.add('hidden');
+    }
+}
+function setPredictionHorizon(days) {
+    currentPredictionHorizon = days;
+
+    // Update button styles
+    const options = [
+        { id: "pred-horizon-7", value: 7 },
+        { id: "pred-horizon-30", value: 30 },
+        { id: "pred-horizon-60", value: 60 },
+    ];
+
+    options.forEach(opt => {
+        const btn = document.getElementById(opt.id);
+        if (!btn) return;
+        if (opt.value === days) {
+            btn.className =
+                "px-2 py-1 rounded-full border border-brand-500 bg-brand-50 text-brand-700 text-[10px]";
+        } else {
+            btn.className =
+                "px-2 py-1 rounded-full border border-slate-200 text-slate-600 hover:border-brand-500 hover:text-brand-700 text-[10px]";
+        }
+    });
+
+    // If prediction tab is active, reload data with new horizon
+    if (currentProcurementTab === "predictive") {
+        fetchPredictiveRestock(true);
+    }
+}
+
+function switchProcurementTab(tab) {
+    currentProcurementTab = tab;
+
+    const btnPred = document.getElementById('tab-predictive');
+    const btnRepl = document.getElementById('tab-replenish');
+
+    // Visual Toggle
+    if (tab === 'predictive') {
+        // ➤ ACTIVE: LUX Prediction
+        btnPred.className = "px-4 py-2 rounded-lg text-xs font-bold text-brand-900 bg-white shadow-sm transition flex items-center gap-2";
+        btnPred.innerHTML = `<i class="fas fa-crystal-ball text-brand-600"></i> LUX Prediction`;
+
+        // ➤ INACTIVE: LUX Auto-Replenish
+        btnRepl.className = "px-4 py-2 rounded-lg text-xs font-bold text-slate-500 hover:text-slate-700 transition flex items-center gap-2";
+        btnRepl.innerHTML = `<i class="fas fa-calculator"></i> LUX Auto-Replenish`;
+
+        fetchPredictiveRestock(true); // Load AI Data
+    } else {
+        // ➤ INACTIVE: LUX Prediction
+        btnPred.className = "px-4 py-2 rounded-lg text-xs font-bold text-slate-500 hover:text-slate-700 transition flex items-center gap-2";
+        btnPred.innerHTML = `<i class="fas fa-crystal-ball"></i> LUX Prediction`;
+
+        // ➤ ACTIVE: LUX Auto-Replenish
+        btnRepl.className = "px-4 py-2 rounded-lg text-xs font-bold text-emerald-900 bg-white shadow-sm transition flex items-center gap-2";
+        btnRepl.innerHTML = `<i class="fas fa-calculator text-emerald-600"></i> LUX Auto-Replenish`;
+
+        fetchReplenishmentRecommendations(true); // Load Math Data
+    }
+}
+
+// //////////////////////////////////////// //
+//      💰 INTELLIGENT FINANCE CHART        //
+// //////////////////////////////////////// //
+
+async function fetchFinances() {
+    // Show loading state on cards
+    document.getElementById('fin-asset-val').innerHTML = '<i class="fas fa-circle-notch fa-spin text-sm"></i>';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/finances/summary`);
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error);
+
+        // 1. Update KPI Cards (Current Month Snapshot)
+        animateValue('fin-asset-val', data.asset_value);
+        animateValue('fin-spend-val', data.monthly_spend);
+        animateValue('fin-usage-val', data.monthly_usage);
+
+        // 2. Render 6-Month Trend Chart
+        // Check if chart_data exists (backend update check)
+        if (data.chart_data) {
+            renderFinanceChart(data.chart_data);
+        } else {
+            // Fallback for old backend version
+            renderFinanceChart({
+                labels: ['Current'],
+                spend: [data.monthly_spend],
+                usage: [data.monthly_usage]
+            });
+        }
+
+    } catch (err) {
+        console.error("Finance Error:", err);
+        document.getElementById('fin-asset-val').textContent = "Err";
+    }
+}
+
+// //////////////////////////////////////// //
+//      💰 FINANCE VISUALIZATION LOGIC      //
+// //////////////////////////////////////// //
+
+function animateValue(elementId, value) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+
+    // ➤ FIX: Force conversion to Number. If invalid (NaN), default to 0.
+    const safeValue = Number(value) || 0;
+
+    el.textContent = `₱${safeValue.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+let financeChartInstance = null;
+
+function renderFinanceChart(chartData) {
+    const ctx = document.getElementById('financeMainChart').getContext('2d');
+
+    if (financeChartInstance) financeChartInstance.destroy();
+
+    const colorWine = '#5E4074';
+    const colorRed = '#f43f5e';
+
+    const gradientWine = ctx.createLinearGradient(0, 0, 0, 400);
+    gradientWine.addColorStop(0, colorWine);
+    gradientWine.addColorStop(1, '#382546');
+
+    // ➤ FIX: Removed custom font. Uses system default.
+    financeChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: chartData.labels,
+            datasets: [
+                {
+                    label: 'Consumption Value (Usage)',
+                    data: chartData.usage,
+                    backgroundColor: gradientWine,
+                    borderRadius: 6,
+                    barPercentage: 0.6,
+                    categoryPercentage: 0.7,
+                    order: 1
+                },
+                {
+                    label: 'Restock Spend (Cost)',
+                    data: chartData.spend,
+                    backgroundColor: colorRed,
+                    borderRadius: 6,
+                    barPercentage: 0.6,
+                    categoryPercentage: 0.7,
+                    order: 2
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    align: 'end',
+                    labels: { usePointStyle: true } // Removed Manrope font
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                    padding: 12,
+                    callbacks: {
+                        label: function (context) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            if (context.parsed.y !== null) {
+                                label += new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(context.parsed.y);
+                            }
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: '#f1f5f9', borderDash: [5, 5] },
+                    ticks: {
+                        // ➤ INTELLIGENT AUTO-SCALING (No hardcoded if/else)
+                        // "compact" notation automatically handles k, M, B, T
+                        callback: function (value) {
+                            return new Intl.NumberFormat('en-PH', {
+                                style: 'currency',
+                                currency: 'PHP',
+                                notation: "compact",
+                                compactDisplay: "short"
+                            }).format(value);
+                        }
+                    }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: { font: { weight: 'bold' } } // Removed Manrope font
+                }
+            }
+        }
+    });
 }
